@@ -355,33 +355,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
-	// Обновляем input только в режиме чата
-	if m.currentState == stateChat {
-		var inputCmd tea.Cmd
-		m.input, inputCmd = m.input.Update(msg)
-		cmds = append(cmds, inputCmd)
-	}
-
-	// Обновляем viewport
-	var vpCmd tea.Cmd
-	m.viewport, vpCmd = m.viewport.Update(msg)
-	cmds = append(cmds, vpCmd)
-
-	if m.scrollToBottom {
-		m.viewport.GotoBottom()
-		m.scrollToBottom = false
-	}
-
-	return m, tea.Batch(cmds...)
-}
-
 // sendMessage отправляет сообщение пользователя в AI
 func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(m.input.Value())

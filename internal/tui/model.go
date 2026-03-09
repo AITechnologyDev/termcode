@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -22,8 +26,10 @@ import (
 type state int
 
 const (
-	stateChat    state = iota // основной чат
-	stateThinking             // AI генерирует ответ
+	stateModelSelect state = iota // выбор модели при старте
+	stateChat                     // основной чат
+	stateThinking                 // AI генерирует ответ
+	statePulling                  // ollama pull — загрузка модели
 )
 
 // ── Сообщения BubbleTea ───────────────────────────────────────────────────────
@@ -43,6 +49,21 @@ type toolDoneMsg struct {
 
 // saveSessionMsg — сигнал сохранить сессию
 type saveSessionMsg struct{}
+
+// ollamaModelsMsg — список моделей от Ollama
+type ollamaModelsMsg struct {
+	models []string
+	err    error
+}
+
+// pullProgressMsg — прогресс ollama pull
+type pullProgressMsg struct {
+	status    string
+	completed int64
+	total     int64
+	done      bool
+	err       error
+}
 
 // ── Модель TUI ────────────────────────────────────────────────────────────────
 
@@ -75,6 +96,22 @@ type Model struct {
 
 	// Признак что viewport нужно прокрутить вниз
 	scrollToBottom bool
+
+	// ── Выбор модели при старте ───────────────────────────────────────────
+	ollamaModels   []string // список моделей от Ollama
+	modelCursor    int      // текущий курсор в списке
+	modelsLoading  bool     // идёт загрузка списка
+
+	// ── Ollama pull ───────────────────────────────────────────────────────
+	pullModelName  string // имя модели которую тянем
+	pullStatus     string // статус из API
+	pullCompleted  int64  // байт скачано
+	pullTotal      int64  // байт всего
+
+	// ── Статистика генерации ──────────────────────────────────────────────
+	genStartTime   time.Time // когда начали генерацию
+	genTokens      int       // примерное кол-во токенов (по словам)
+	genSpeed       float64   // токен/сек
 }
 
 // New создаёт новую TUI модель
@@ -121,14 +158,16 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 	sp.Style = spinnerStyle
 
 	return &Model{
-		cfg:      cfg,
-		provider: provider,
-		sess:     sess,
-		workDir:  workDir,
-		executor: tools.New(workDir),
-		viewport: vp,
-		input:    ta,
-		spinner:  sp,
+		cfg:          cfg,
+		provider:     provider,
+		sess:         sess,
+		workDir:      workDir,
+		executor:     tools.New(workDir),
+		viewport:     vp,
+		input:        ta,
+		spinner:      sp,
+		currentState: stateModelSelect,
+		modelsLoading: true,
 	}, nil
 }
 
@@ -138,6 +177,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		m.spinner.Tick,
+		fetchOllamaModels(m.cfg),
 	)
 }
 
@@ -153,22 +193,122 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m = m.resize()
 
+	// ── Список моделей получен ────────────────────────────────────────────────
+	case ollamaModelsMsg:
+		m.modelsLoading = false
+		if msg.err != nil {
+			// Ollama недоступна — сразу идём в чат
+			m.errMsg = "Ollama недоступна: " + msg.err.Error()
+			m.currentState = stateChat
+		} else if len(msg.models) == 0 {
+			m.currentState = stateChat
+		} else {
+			m.ollamaModels = msg.models
+			m.modelCursor = 0
+			// Предвыбираем текущую модель если она есть в списке
+			pc, _ := m.cfg.ActiveProviderConfig()
+			for i, name := range msg.models {
+				if name == pc.Model {
+					m.modelCursor = i
+					break
+				}
+			}
+		}
+		return m, nil
+
+	// ── Прогресс ollama pull ──────────────────────────────────────────────────
+	case pullProgressMsg:
+		if msg.err != nil {
+			m.currentState = stateChat
+			m.errMsg = "pull ошибка: " + msg.err.Error()
+			return m, nil
+		}
+		m.pullStatus = msg.status
+		m.pullCompleted = msg.completed
+		m.pullTotal = msg.total
+		if msg.done {
+			// Pull завершён — перезагружаем список моделей
+			m.currentState = stateModelSelect
+			m.modelsLoading = true
+			m.pullModelName = ""
+			return m, fetchOllamaModels(m.cfg)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
+		// ── Клавиши в режиме выбора модели ───────────────────────────────────
+		if m.currentState == stateModelSelect && !m.modelsLoading {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				return m, tea.Quit
+			case tea.KeyUp:
+				if m.modelCursor > 0 {
+					m.modelCursor--
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.modelCursor < len(m.ollamaModels)-1 {
+					m.modelCursor++
+				}
+				return m, nil
+			case tea.KeyEnter:
+				return m.selectModel(m.ollamaModels[m.modelCursor])
+			case tea.KeyRunes:
+				// 'p' — pull новой модели: ввод имени
+				if string(msg.Runes) == "p" {
+					m.currentState = stateChat
+					m.input.SetValue("Введи имя модели для pull (например: qwen3:8b): ")
+					return m, nil
+				}
+				// 'q' — пропустить выбор
+				if string(msg.Runes) == "q" {
+					m.currentState = stateChat
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+
+		// ── Клавиши в режиме pull ─────────────────────────────────────────────
+		if m.currentState == statePulling {
+			if msg.Type == tea.KeyCtrlC {
+				m.currentState = stateChat
+				m.pullModelName = ""
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// ── Клавиши в чате ────────────────────────────────────────────────────
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			_ = m.sess.Save()
 			return m, tea.Quit
 
 		case tea.KeyCtrlS:
-			// Ctrl+S — принудительное сохранение сессии
 			if err := m.sess.Save(); err != nil {
 				m.errMsg = "Ошибка сохранения: " + err.Error()
 			}
 			return m, nil
 
-		case tea.KeyEnter:
-			// Enter без Shift — отправляем сообщение
+		case tea.KeyCtrlM:
+			// Ctrl+M — вернуться к выбору модели
 			if m.currentState == stateChat {
+				m.currentState = stateModelSelect
+				m.modelsLoading = true
+				return m, fetchOllamaModels(m.cfg)
+			}
+
+		case tea.KeyEnter:
+			if m.currentState == stateChat {
+				// Проверяем не команда ли это pull
+				text := strings.TrimSpace(m.input.Value())
+				if strings.HasPrefix(text, "/pull ") {
+					modelName := strings.TrimPrefix(text, "/pull ")
+					modelName = strings.TrimSpace(modelName)
+					m.input.Reset()
+					return m.startPull(modelName)
+				}
 				return m.sendMessage()
 			}
 
@@ -215,6 +355,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
+	// Обновляем input только в режиме чата
+	if m.currentState == stateChat {
+		var inputCmd tea.Cmd
+		m.input, inputCmd = m.input.Update(msg)
+		cmds = append(cmds, inputCmd)
+	}
+
+	// Обновляем viewport
+	var vpCmd tea.Cmd
+	m.viewport, vpCmd = m.viewport.Update(msg)
+	cmds = append(cmds, vpCmd)
+
+	if m.scrollToBottom {
+		m.viewport.GotoBottom()
+		m.scrollToBottom = false
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
 // sendMessage отправляет сообщение пользователя в AI
 func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(m.input.Value())
@@ -226,12 +393,14 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	m.errMsg = ""
 	m.currentState = stateThinking
 	m.streaming = ""
+	m.genStartTime = time.Now()
+	m.genTokens = 0
+	m.genSpeed = 0
 
 	m.sess.AddMessage(session.RoleUser, text)
 	m.refreshViewport()
 	m.scrollToBottom = true
 
-	// Запускаем стриминг
 	cmd := m.streamAI()
 	return m, tea.Batch(cmd, m.spinner.Tick)
 }
@@ -298,15 +467,23 @@ func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.streaming += msg.content
+	m.genTokens += countTokens(msg.content)
+	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
+		m.genSpeed = float64(m.genTokens) / elapsed
+	}
 	m.refreshViewport()
 	m.scrollToBottom = true
 
 	return m, nil
 }
 
-// Update нужен для обработки streamReaderMsg
+// updateStream читает следующий чанк из канала
 func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
 	m.streaming += msg.content
+	m.genTokens += countTokens(msg.content)
+	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
+		m.genSpeed = float64(m.genTokens) / elapsed
+	}
 	m.refreshViewport()
 	m.scrollToBottom = true
 
@@ -327,10 +504,46 @@ func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// countTokens приближённо считает токены по словам (1 слово ≈ 1.3 токена)
+func countTokens(text string) int {
+	words := len(strings.Fields(text))
+	if words == 0 {
+		return 0
+	}
+	return int(float64(words)*1.3 + 0.5)
+}
+
+// filterThinkTags убирает <think>...</think> блоки из текста (для reasoning моделей)
+func filterThinkTags(text string) string {
+	result := text
+	for {
+		start := strings.Index(result, "<think>")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(result, "</think>")
+		if end == -1 {
+			// Незакрытый тег — обрезаем от <think> до конца
+			result = strings.TrimSpace(result[:start])
+			break
+		}
+		result = result[:start] + result[end+len("</think>"):]
+	}
+	return strings.TrimSpace(result)
+}
+
 // finalizeAIResponse вызывается когда стрим завершён
 func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 	fullText := m.streaming
 	m.streaming = ""
+
+	// Фильтруем <think>...</think> теги (Qwen3, GLM, DeepSeek reasoning)
+	fullText = filterThinkTags(fullText)
+
+	// Сохраняем финальную статистику
+	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
+		m.genSpeed = float64(m.genTokens) / elapsed
+	}
 
 	// Парсим tool calls из ответа
 	calls, cleanText := ai.ParseToolCalls(fullText)
@@ -401,6 +614,16 @@ func (m Model) View() string {
 		return "Загрузка..."
 	}
 
+	// Экран выбора модели
+	if m.currentState == stateModelSelect {
+		return m.renderModelSelect()
+	}
+
+	// Экран загрузки модели (ollama pull)
+	if m.currentState == statePulling {
+		return m.renderPullScreen()
+	}
+
 	header := m.renderHeader()
 	chatView := m.viewport.View()
 	inputArea := m.renderInput()
@@ -415,6 +638,79 @@ func (m Model) View() string {
 		statusBar,
 		hints,
 	)
+}
+
+// renderModelSelect — экран выбора модели
+func (m Model) renderModelSelect() string {
+	var sb strings.Builder
+
+	title := headerStyle.Render(" TermCode — Выбор модели ")
+	sb.WriteString(title + "\n\n")
+
+	if m.modelsLoading {
+		sb.WriteString(fmt.Sprintf("  %s Загружаем список моделей Ollama...\n", m.spinner.View()))
+		return sb.String()
+	}
+
+	if len(m.ollamaModels) == 0 {
+		sb.WriteString(statusErrStyle.Render("  Ollama недоступна или нет моделей.") + "\n\n")
+		sb.WriteString(keyHintStyle.Render("  Запусти: ollama serve\n"))
+		sb.WriteString(keyHintStyle.Render("  Скачай модель: /pull qwen2.5-coder:7b\n\n"))
+		sb.WriteString(keyStyle.Render("  q") + keyHintStyle.Render(" — продолжить без выбора\n"))
+		return sb.String()
+	}
+
+	sb.WriteString(keyHintStyle.Render("  Выбери модель (↑↓ — навигация, Enter — выбрать, p — скачать новую, q — пропустить)\n\n"))
+
+	for i, model := range m.ollamaModels {
+		if i == m.modelCursor {
+			sb.WriteString(userBubbleStyle.Render(fmt.Sprintf("  ▶ %s", model)) + "\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("    %s\n", model))
+		}
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(keyHintStyle.Render(fmt.Sprintf("  Модель %d/%d", m.modelCursor+1, len(m.ollamaModels))))
+	return sb.String()
+}
+
+// renderPullScreen — экран прогресса ollama pull
+func (m Model) renderPullScreen() string {
+	var sb strings.Builder
+
+	title := headerStyle.Render(" TermCode — Загрузка модели ")
+	sb.WriteString(title + "\n\n")
+
+	model := assistantLabelStyle.Render(m.pullModelName)
+	sb.WriteString(fmt.Sprintf("  Скачиваем: %s\n\n", model))
+
+	sb.WriteString(fmt.Sprintf("  Статус: %s\n\n", m.pullStatus))
+
+	if m.pullTotal > 0 {
+		pct := float64(m.pullCompleted) / float64(m.pullTotal)
+		barWidth := m.width - 10
+		if barWidth < 10 {
+			barWidth = 10
+		}
+		filled := int(pct * float64(barWidth))
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+
+		completedMB := float64(m.pullCompleted) / 1024 / 1024
+		totalMB := float64(m.pullTotal) / 1024 / 1024
+
+		sb.WriteString(fmt.Sprintf("  [%s] %.0f%%\n", bar, pct*100))
+		sb.WriteString(fmt.Sprintf("  %.1f MB / %.1f MB\n", completedMB, totalMB))
+	} else {
+		sb.WriteString(fmt.Sprintf("  %s Идёт загрузка...\n", m.spinner.View()))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(keyStyle.Render("  Ctrl+C") + keyHintStyle.Render(" — прервать"))
+	return sb.String()
 }
 
 // renderHeader отрисовывает верхнюю панель
@@ -457,20 +753,36 @@ func (m Model) renderInput() string {
 
 // renderStatusBar отрисовывает статусную строку
 func (m Model) renderStatusBar() string {
-	var status string
+	var left, right string
+
 	switch m.currentState {
 	case stateThinking:
-		status = statusBusyStyle.Render(m.spinner.View() + " Генерирую ответ...")
+		speed := ""
+		if m.genSpeed > 0 {
+			speed = fmt.Sprintf(" %.1f tok/s · ~%d tok", m.genSpeed, m.genTokens)
+		}
+		left = statusBusyStyle.Render(m.spinner.View()+" Генерирую...") +
+			keyHintStyle.Render(speed)
 	case stateChat:
 		if m.errMsg != "" {
-			status = statusErrStyle.Render("✗ " + m.errMsg)
+			left = statusErrStyle.Render("✗ " + m.errMsg)
 		} else {
-			msgs := len(m.sess.Messages)
-			status = statusOKStyle.Render(fmt.Sprintf("✓ Готов — %d сообщений", msgs))
+			left = statusOKStyle.Render(fmt.Sprintf("✓ Готов — %d сообщений", len(m.sess.Messages)))
+			// Показываем финальную скорость последней генерации
+			if m.genSpeed > 0 {
+				right = keyHintStyle.Render(fmt.Sprintf("последний ответ: %.1f tok/s · %d tok", m.genSpeed, m.genTokens))
+			}
 		}
 	}
 
-	return statusBarStyle.Width(m.width).Render(status)
+	if right != "" {
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+		if gap < 1 {
+			gap = 1
+		}
+		return statusBarStyle.Width(m.width).Render(left + strings.Repeat(" ", gap) + right)
+	}
+	return statusBarStyle.Width(m.width).Render(left)
 }
 
 // renderHints отрисовывает подсказки клавиш
@@ -478,9 +790,10 @@ func (m Model) renderHints() string {
 	hints := []string{
 		keyStyle.Render("Enter") + keyHintStyle.Render(" отправить"),
 		keyStyle.Render("Shift+Enter") + keyHintStyle.Render(" перенос"),
+		keyStyle.Render("/pull <модель>") + keyHintStyle.Render(" скачать"),
+		keyStyle.Render("Ctrl+M") + keyHintStyle.Render(" модели"),
 		keyStyle.Render("Ctrl+S") + keyHintStyle.Render(" сохранить"),
 		keyStyle.Render("Ctrl+C") + keyHintStyle.Render(" выйти"),
-		keyStyle.Render("↑↓") + keyHintStyle.Render(" скролл"),
 	}
 	return keyHintStyle.Render(strings.Join(hints, "  "))
 }
@@ -686,3 +999,187 @@ func renderInlineBold(line string) string {
 }
 
 
+
+// ── Ollama: список моделей ────────────────────────────────────────────────────
+
+// fetchOllamaModels загружает список установленных моделей из Ollama
+func fetchOllamaModels(cfg *config.Config) tea.Cmd {
+	return func() tea.Msg {
+		pc, ok := cfg.ActiveProviderConfig()
+		if !ok {
+			return ollamaModelsMsg{err: fmt.Errorf("конфиг провайдера не найден")}
+		}
+
+		// Ollama API: GET /api/tags
+		url := strings.TrimRight(pc.BaseURL, "/") + "/api/tags"
+		resp, err := httpGetJSON(url)
+		if err != nil {
+			return ollamaModelsMsg{err: err}
+		}
+
+		// Парсим {"models": [{"name": "..."}]}
+		type ollamaModel struct {
+			Name string `json:"name"`
+		}
+		type ollamaTagsResp struct {
+			Models []ollamaModel `json:"models"`
+		}
+
+		var tagsResp ollamaTagsResp
+		if err := jsonUnmarshal(resp, &tagsResp); err != nil {
+			return ollamaModelsMsg{err: err}
+		}
+
+		names := make([]string, 0, len(tagsResp.Models))
+		for _, m := range tagsResp.Models {
+			names = append(names, m.Name)
+		}
+		return ollamaModelsMsg{models: names}
+	}
+}
+
+// selectModel применяет выбранную модель и переходит в чат
+func (m Model) selectModel(name string) (tea.Model, tea.Cmd) {
+	// Обновляем конфиг
+	pc := m.cfg.Providers[m.cfg.ActiveProvider]
+	pc.Model = name
+	m.cfg.Providers[m.cfg.ActiveProvider] = pc
+	_ = m.cfg.Save()
+
+	// Пересоздаём провайдера с новой моделью
+	provider, err := ai.New(pc, m.cfg.ActiveProvider)
+	if err != nil {
+		m.errMsg = "Ошибка смены модели: " + err.Error()
+		m.currentState = stateChat
+		return m, nil
+	}
+
+	m.provider = provider
+	m.sess.Model = name
+	m.currentState = stateChat
+	m.refreshViewport()
+	return m, nil
+}
+
+// ── Ollama pull ───────────────────────────────────────────────────────────────
+
+// startPull запускает ollama pull для указанной модели
+func (m Model) startPull(modelName string) (tea.Model, tea.Cmd) {
+	if modelName == "" {
+		m.errMsg = "Укажи имя модели: /pull qwen2.5-coder:7b"
+		return m, nil
+	}
+
+	m.currentState = statePulling
+	m.pullModelName = modelName
+	m.pullStatus = "Подключение..."
+	m.pullCompleted = 0
+	m.pullTotal = 0
+
+	pc, _ := m.cfg.ActiveProviderConfig()
+	baseURL := strings.TrimRight(pc.BaseURL, "/")
+
+	return m, tea.Batch(m.spinner.Tick, streamOllamaPull(baseURL, modelName))
+}
+
+// streamOllamaPull стримит прогресс ollama pull через /api/pull
+func streamOllamaPull(baseURL, modelName string) tea.Cmd {
+	return func() tea.Msg {
+		url := baseURL + "/api/pull"
+
+		body := fmt.Sprintf(`{"name":%q,"stream":true}`, modelName)
+		resp, err := httpPostStream(url, body)
+		if err != nil {
+			return pullProgressMsg{err: err}
+		}
+		defer resp.Close()
+
+		scanner := newLineScanner(resp)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			status, completed, total, done, parseErr := parsePullLine(line)
+			if parseErr != nil {
+				continue
+			}
+
+			if done {
+				return pullProgressMsg{status: "Готово!", done: true}
+			}
+
+			return pullProgressMsg{
+				status:    status,
+				completed: completed,
+				total:     total,
+				done:      false,
+			}
+		}
+
+		return pullProgressMsg{done: true}
+	}
+}
+
+// ── HTTP хелперы (минимальные, без лишних зависимостей) ──────────────────────
+
+func httpGetJSON(url string) ([]byte, error) {
+	resp, err := httpDo("GET", url, "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func httpPostStream(url, body string) (io.ReadCloser, error) {
+	resp, err := httpDo("POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+func httpDo(method, url, body string) (*http.Response, error) {
+	var reqBody io.Reader
+	if body != "" {
+		reqBody = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := &http.Client{Timeout: 0} // без таймаута для pull
+	return client.Do(req)
+}
+
+func jsonUnmarshal(data []byte, v interface{}) error {
+	return json.Unmarshal(data, v)
+}
+
+func newLineScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 64*1024), 64*1024)
+	return s
+}
+
+// parsePullLine парсит одну строку JSON из ollama pull stream
+func parsePullLine(line string) (status string, completed, total int64, done bool, err error) {
+	var obj struct {
+		Status    string `json:"status"`
+		Completed int64  `json:"completed"`
+		Total     int64  `json:"total"`
+	}
+	if err = json.Unmarshal([]byte(line), &obj); err != nil {
+		return
+	}
+	status = obj.Status
+	completed = obj.Completed
+	total = obj.Total
+	done = obj.Status == "success"
+	return
+}

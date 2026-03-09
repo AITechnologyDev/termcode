@@ -284,36 +284,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			_ = m.sess.Save()
 			return m, tea.Quit
-
 		case tea.KeyCtrlS:
 			if err := m.sess.Save(); err != nil {
 				m.errMsg = "Ошибка сохранения: " + err.Error()
 			}
 			return m, nil
-
 		case tea.KeyCtrlM:
-			// Ctrl+M — вернуться к выбору модели
 			if m.currentState == stateChat {
 				m.currentState = stateModelSelect
 				m.modelsLoading = true
 				return m, fetchOllamaModels(m.cfg)
 			}
-
-		case tea.KeyEnter:
-			if m.currentState == stateChat {
-				// Проверяем не команда ли это pull
+		case tea.KeyEsc:
+			m.errMsg = ""
+		default:
+			if msg.Type == tea.KeyEnter && m.currentState == stateChat {
 				text := strings.TrimSpace(m.input.Value())
 				if strings.HasPrefix(text, "/pull ") {
-					modelName := strings.TrimPrefix(text, "/pull ")
-					modelName = strings.TrimSpace(modelName)
+					modelName := strings.TrimSpace(strings.TrimPrefix(text, "/pull "))
 					m.input.Reset()
 					return m.startPull(modelName)
 				}
 				return m.sendMessage()
 			}
-
-		case tea.KeyEsc:
-			m.errMsg = ""
 		}
 
 	case aiChunkMsg:

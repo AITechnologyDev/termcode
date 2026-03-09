@@ -179,6 +179,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case aiChunkMsg:
 		return m.handleAIChunk(msg)
 
+	case streamReaderMsg:
+		return m.updateStream(msg)
+
 	case toolDoneMsg:
 		return m.handleToolDone(msg)
 

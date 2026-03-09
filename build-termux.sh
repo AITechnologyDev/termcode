@@ -46,9 +46,10 @@ mkdir -p "$BUILD_DIR"
 cp -r "${SCRIPT_DIR}/." "$BUILD_DIR/"
 cd "$BUILD_DIR"
 
-# Загружаем только внешние зависимости (не трогаем внутренние пакеты)
-info "Загружаем зависимости..."
-go mod download || err "go mod download не удался. Проверь интернет."
+# Генерируем go.sum и загружаем внешние зависимости
+info "Загружаем зависимости (go mod tidy)..."
+# GOFLAGS=-mod=mod нужен чтобы tidy не ругался на workspace
+GOFLAGS=-mod=mod go mod tidy || err "go mod tidy не удался. Проверь интернет."
 
 # Собираем
 info "Собираем termcode..."

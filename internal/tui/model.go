@@ -30,6 +30,7 @@ const (
 	stateChat                     // основной чат
 	stateThinking                 // AI генерирует ответ
 	statePulling                  // ollama pull — загрузка модели
+	stateQuestion                 // AI задал уточняющий вопрос с вариантами
 )
 
 // ── Сообщения BubbleTea ───────────────────────────────────────────────────────
@@ -112,6 +113,11 @@ type Model struct {
 	genStartTime   time.Time // когда начали генерацию
 	genTokens      int       // примерное кол-во токенов (по словам)
 	genSpeed       float64   // токен/сек
+
+	// ── Интерактивный вопрос от AI ────────────────────────────────────────
+	question        string   // текст вопроса
+	questionOptions []string // варианты ответа (могут быть пустыми)
+	questionCursor  int      // текущий курсор на варианте
 }
 
 // New создаёт новую TUI модель
@@ -279,7 +285,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// ── Клавиши в чате ────────────────────────────────────────────────────
+		// ── Клавиши в режиме вопроса от AI ───────────────────────────────────
+		if m.currentState == stateQuestion {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				_ = m.sess.Save()
+				return m, tea.Quit
+			case tea.KeyUp:
+				if m.questionCursor > 0 {
+					m.questionCursor--
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.questionCursor < len(m.questionOptions) {
+					m.questionCursor++
+				}
+				return m, nil
+			case tea.KeyEnter:
+				return m.submitQuestionAnswer()
+			case tea.KeyEsc:
+				// Esc — отменить вопрос, вернуться в чат
+				m.currentState = stateChat
+				m.question = ""
+				m.questionOptions = nil
+				return m, nil
+			}
+			// Текстовый ввод — обновляем textarea (свой ответ)
+			var inputCmd tea.Cmd
+			m.input, inputCmd = m.input.Update(msg)
+			return m, inputCmd
+		}
+
+		// ── Клавиши в чате (только если stateChat) ───────────────────────────
+		if m.currentState != stateChat {
+			return m, nil
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			_ = m.sess.Save()
@@ -290,15 +330,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyCtrlM:
-			if m.currentState == stateChat {
-				m.currentState = stateModelSelect
-				m.modelsLoading = true
-				return m, fetchOllamaModels(m.cfg)
-			}
+			m.currentState = stateModelSelect
+			m.modelsLoading = true
+			return m, fetchOllamaModels(m.cfg)
 		case tea.KeyEsc:
 			m.errMsg = ""
 		default:
-			if msg.Type == tea.KeyEnter && m.currentState == stateChat {
+			if msg.Type == tea.KeyEnter {
 				text := strings.TrimSpace(m.input.Value())
 				if strings.HasPrefix(text, "/pull ") {
 					modelName := strings.TrimSpace(strings.TrimPrefix(text, "/pull "))
@@ -531,8 +569,20 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Нет tool calls — возвращаемся в режим чата
+	// Нет tool calls — проверяем не вопрос ли это с вариантами
 	m.currentState = stateChat
+
+	// Парсим ```question блок если есть
+	if q, opts := parseQuestionBlock(cleanText); q != "" {
+		m.question = q
+		m.questionOptions = opts
+		m.questionCursor = 0
+		m.currentState = stateQuestion
+		// Очищаем ввод для своего варианта
+		m.input.Reset()
+		m.input.Placeholder = "Свой вариант ответа..."
+	}
+
 	m.refreshViewport()
 	m.scrollToBottom = true
 
@@ -592,8 +642,16 @@ func (m Model) View() string {
 
 	header := m.renderHeader()
 	chatView := m.viewport.View()
-	inputArea := m.renderInput()
 	statusBar := m.renderStatusBar()
+
+	// В режиме вопроса — показываем панель вопроса вместо обычного ввода
+	var inputArea string
+	if m.currentState == stateQuestion {
+		inputArea = m.renderQuestionPanel()
+	} else {
+		inputArea = m.renderInput()
+	}
+
 	hints := m.renderHints()
 
 	return lipgloss.JoinVertical(lipgloss.Left,
@@ -1148,4 +1206,128 @@ func parsePullLine(line string) (status string, completed, total int64, done boo
 	total = obj.Total
 	done = obj.Status == "success"
 	return
+}
+
+// ── Интерактивные вопросы от AI ───────────────────────────────────────────────
+
+// parseQuestionBlock ищет ```question блок в тексте ответа AI.
+// Формат:
+//
+//	```question
+//	Текст вопроса?
+//	- Вариант A
+//	- Вариант B
+//	- Вариант C
+//	```
+//
+// Возвращает текст вопроса и срез вариантов (может быть пустым).
+func parseQuestionBlock(text string) (question string, options []string) {
+	const openTag = "```question"
+	const closeTag = "```"
+
+	start := strings.Index(text, openTag)
+	if start == -1 {
+		return "", nil
+	}
+	inner := text[start+len(openTag):]
+	end := strings.Index(inner, closeTag)
+	if end == -1 {
+		inner = strings.TrimSpace(inner)
+	} else {
+		inner = strings.TrimSpace(inner[:end])
+	}
+
+	lines := strings.Split(inner, "\n")
+	if len(lines) == 0 {
+		return "", nil
+	}
+
+	// Первая строка — текст вопроса
+	question = strings.TrimSpace(lines[0])
+
+	// Остальные строки начинающиеся с "- " — варианты
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			opt := strings.TrimPrefix(line, "- ")
+			if opt != "" {
+				options = append(options, opt)
+			}
+		}
+	}
+	return question, options
+}
+
+// submitQuestionAnswer отправляет выбранный ответ на вопрос AI
+func (m Model) submitQuestionAnswer() (tea.Model, tea.Cmd) {
+	var answer string
+
+	customText := strings.TrimSpace(m.input.Value())
+
+	if customText != "" {
+		// Пользователь написал свой вариант
+		answer = customText
+	} else if len(m.questionOptions) > 0 && m.questionCursor < len(m.questionOptions) {
+		// Выбран один из предложенных вариантов
+		answer = m.questionOptions[m.questionCursor]
+	} else {
+		// Ничего не выбрано и не написано
+		return m, nil
+	}
+
+	// Сбрасываем состояние вопроса
+	m.question = ""
+	m.questionOptions = nil
+	m.questionCursor = 0
+	m.input.Reset()
+	m.input.Placeholder = "Введи запрос... (Enter — отправить, Shift+Enter — перенос строки)"
+	m.currentState = stateThinking
+	m.streaming = ""
+	m.genStartTime = time.Now()
+	m.genTokens = 0
+	m.genSpeed = 0
+
+	// Добавляем ответ как сообщение пользователя
+	m.sess.AddMessage(session.RoleUser, answer)
+	m.refreshViewport()
+	m.scrollToBottom = true
+
+	return m, tea.Batch(m.streamAI(), m.spinner.Tick)
+}
+
+// renderQuestionPanel отрисовывает панель выбора ответа на вопрос AI
+func (m Model) renderQuestionPanel() string {
+	var sb strings.Builder
+	w := m.width - 2
+
+	// Заголовок вопроса
+	questionHeader := toolCallStyle.Width(w).Render("❓ " + m.question)
+	sb.WriteString(questionHeader)
+	sb.WriteString("\n")
+
+	// Варианты ответа
+	if len(m.questionOptions) > 0 {
+		for i, opt := range m.questionOptions {
+			var line string
+			if i == m.questionCursor {
+				line = userBubbleStyle.Render(fmt.Sprintf("  ▶ %d. %s", i+1, opt))
+			} else {
+				line = keyHintStyle.Render(fmt.Sprintf("    %d. %s", i+1, opt))
+			}
+			sb.WriteString(line + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Строка своего ввода (последний "вариант" = курсор на конце списка)
+	var inputStyle lipgloss.Style
+	if m.questionCursor == len(m.questionOptions) || len(m.questionOptions) == 0 {
+		inputStyle = inputContainerFocusStyle
+	} else {
+		inputStyle = inputContainerStyle
+	}
+	prompt := inputPromptStyle.Render("✏ ")
+	sb.WriteString(inputStyle.Width(w).Render(prompt + m.input.View()))
+
+	return sb.String()
 }

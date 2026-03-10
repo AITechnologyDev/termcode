@@ -257,7 +257,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelCursor++
 				}
 				return m, nil
-			case tea.KeyEnter, tea.KeyCR:
+			case tea.KeyEnter:
 				return m.selectModel(m.ollamaModels[m.modelCursor])
 			case tea.KeyRunes:
 				// 'p' — pull новой модели: ввод имени
@@ -301,7 +301,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.questionCursor++
 				}
 				return m, nil
-			case tea.KeyEnter, tea.KeyCR:
+			case tea.KeyEnter:
 				return m.submitQuestionAnswer()
 			case tea.KeyEsc:
 				// Esc — отменить вопрос, вернуться в чат
@@ -331,8 +331,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyEsc:
 			m.errMsg = ""
-		case tea.KeyEnter, tea.KeyCR:
-			// tea.KeyEnter и tea.KeyCR — одно и то же на Android/Termux
+		case tea.KeyEnter:
 			text := strings.TrimSpace(m.input.Value())
 			if text == "/models" {
 				m.input.Reset()

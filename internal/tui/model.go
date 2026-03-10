@@ -257,7 +257,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelCursor++
 				}
 				return m, nil
-			case tea.KeyEnter:
+			case tea.KeyEnter, tea.KeyCR:
 				return m.selectModel(m.ollamaModels[m.modelCursor])
 			case tea.KeyRunes:
 				// 'p' — pull новой модели: ввод имени
@@ -301,7 +301,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.questionCursor++
 				}
 				return m, nil
-			case tea.KeyEnter:
+			case tea.KeyEnter, tea.KeyCR:
 				return m.submitQuestionAnswer()
 			case tea.KeyEsc:
 				// Esc — отменить вопрос, вернуться в чат
@@ -329,28 +329,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = "Ошибка сохранения: " + err.Error()
 			}
 			return m, nil
-		case tea.KeyCtrlM:
-			// Ctrl+M на Android часто совпадает с Enter — НЕ используем для смены модели
-			// Смена модели только через явную команду /models
-			fallthrough
 		case tea.KeyEsc:
 			m.errMsg = ""
-		default:
-			if msg.Type == tea.KeyEnter {
-				text := strings.TrimSpace(m.input.Value())
-				if text == "/models" {
-					m.input.Reset()
-					m.currentState = stateModelSelect
-					m.modelsLoading = true
-					return m, fetchOllamaModels(m.cfg)
-				}
-				if strings.HasPrefix(text, "/pull ") {
-					modelName := strings.TrimSpace(strings.TrimPrefix(text, "/pull "))
-					m.input.Reset()
-					return m.startPull(modelName)
-				}
-				return m.sendMessage()
+		case tea.KeyEnter, tea.KeyCR:
+			// tea.KeyEnter и tea.KeyCR — одно и то же на Android/Termux
+			text := strings.TrimSpace(m.input.Value())
+			if text == "/models" {
+				m.input.Reset()
+				m.currentState = stateModelSelect
+				m.modelsLoading = true
+				return m, fetchOllamaModels(m.cfg)
 			}
+			if strings.HasPrefix(text, "/pull ") {
+				modelName := strings.TrimSpace(strings.TrimPrefix(text, "/pull "))
+				m.input.Reset()
+				return m.startPull(modelName)
+			}
+			return m.sendMessage()
 		}
 
 	case aiChunkMsg:

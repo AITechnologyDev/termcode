@@ -330,14 +330,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyCtrlM:
-			m.currentState = stateModelSelect
-			m.modelsLoading = true
-			return m, fetchOllamaModels(m.cfg)
+			// Ctrl+M на Android часто совпадает с Enter — НЕ используем для смены модели
+			// Смена модели только через явную команду /models
+			fallthrough
 		case tea.KeyEsc:
 			m.errMsg = ""
 		default:
 			if msg.Type == tea.KeyEnter {
 				text := strings.TrimSpace(m.input.Value())
+				if text == "/models" {
+					m.input.Reset()
+					m.currentState = stateModelSelect
+					m.modelsLoading = true
+					return m, fetchOllamaModels(m.cfg)
+				}
 				if strings.HasPrefix(text, "/pull ") {
 					modelName := strings.TrimSpace(strings.TrimPrefix(text, "/pull "))
 					m.input.Reset()
@@ -814,8 +820,8 @@ func (m Model) renderHints() string {
 	hints := []string{
 		keyStyle.Render("Enter") + keyHintStyle.Render(" отправить"),
 		keyStyle.Render("Shift+Enter") + keyHintStyle.Render(" перенос"),
+		keyStyle.Render("/models") + keyHintStyle.Render(" сменить модель"),
 		keyStyle.Render("/pull <модель>") + keyHintStyle.Render(" скачать"),
-		keyStyle.Render("Ctrl+M") + keyHintStyle.Render(" модели"),
 		keyStyle.Render("Ctrl+S") + keyHintStyle.Render(" сохранить"),
 		keyStyle.Render("Ctrl+C") + keyHintStyle.Render(" выйти"),
 	}

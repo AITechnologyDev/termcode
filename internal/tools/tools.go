@@ -273,27 +273,55 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 
 // ToolDefs возвращает описание инструментов для системного промпта
 func ToolDefs() string {
-	return `## Доступные инструменты
+	return `## Tools
 
-Для вызова инструмента используй JSON-блок в своём ответе:
+You have access to tools. To call a tool, output ONLY this exact format in your response:
+
 ` + "```" + `tool
-{"tool": "имя_инструмента", "params": {"ключ": "значение"}}
+{"tool": "tool_name", "params": {"key": "value"}}
 ` + "```" + `
 
-### read_file
-Читает файл. Параметры: path (относительный путь от корня проекта)
+IMPORTANT RULES:
+- Use EXACTLY the ` + "```tool" + ` format shown above — no other format
+- Do NOT write [tool:name] or {"action": ...} formats
+- Do NOT explain the tool call, just output the block
+- After the tool result is shown, continue your response normally
+- Call ONE tool at a time
 
-### write_file  
-Записывает файл полностью. Параметры: path, content
+### read_file
+Read a file. Params: path (relative to project root)
+Example:
+` + "```" + `tool
+{"tool": "read_file", "params": {"path": "main.go"}}
+` + "```" + `
+
+### write_file
+Write entire file content. Params: path, content
+Example:
+` + "```" + `tool
+{"tool": "write_file", "params": {"path": "hello.go", "content": "package main\n"}}
+` + "```" + `
 
 ### patch_file
-Заменяет первое вхождение строки в файле. Параметры: path, old_str, new_str
-Предпочитай patch_file вместо write_file для небольших изменений.
+Replace first occurrence of old_str with new_str in file. Params: path, old_str, new_str
+Prefer this over write_file for small changes.
+Example:
+` + "```" + `tool
+{"tool": "patch_file", "params": {"path": "main.go", "old_str": "v0.1.0", "new_str": "v0.2.0"}}
+` + "```" + `
 
 ### list_files
-Показывает дерево файлов проекта. Параметры: path (опционально, по умолчанию корень)
+Show project file tree. Params: path (optional, default = root)
+Example:
+` + "```" + `tool
+{"tool": "list_files", "params": {}}
+` + "```" + `
 
 ### run_command
-Запускает shell-команду. Параметры: command
-Используй для: go build, go test, pip install, git status и т.д.`
+Run a shell command. Params: command
+Example:
+` + "```" + `tool
+{"tool": "run_command", "params": {"command": "go build ./..."}}
+` + "```" + `
+`
 }

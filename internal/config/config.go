@@ -19,9 +19,76 @@ const (
 
 // ProviderConfig — настройки одного провайдера
 type ProviderConfig struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
-	Model   string `json:"model"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	Model         string `json:"model"`
+	// MaxTokens — максимум токенов в одном ответе (0 = авто по модели)
+	MaxTokens     int    `json:"max_tokens,omitempty"`
+	// ContextLength — размер окна контекста (0 = авто по модели)
+	ContextLength int    `json:"context_length,omitempty"`
+}
+
+// modelLimits — известные лимиты моделей: [max_tokens, context_length]
+// Если модели нет в таблице — используем консервативные дефолты
+var modelLimits = map[string][2]int{
+	// GLM
+	"glm-4":          {4096, 128000},
+	"glm-4v":         {1024, 128000},
+	"glm-4-flash":    {4096, 128000},
+	"glm-4.7":        {8192, 128000},
+	"glm-4.7:cloud":  {8192, 128000},
+	"glm-3-turbo":    {4096, 32768},
+	// Qwen
+	"qwen2.5-coder:7b":   {8192, 32768},
+	"qwen2.5-coder:14b":  {8192, 32768},
+	"qwen2.5-coder:32b":  {8192, 32768},
+	"qwen3:8b":           {8192, 32768},
+	"qwen3:14b":          {8192, 32768},
+	"qwen3:32b":          {8192, 32768},
+	"qwen3-coder":        {16384, 131072},
+	// OpenAI
+	"gpt-4o":             {16384, 128000},
+	"gpt-4o-mini":        {16384, 128000},
+	"gpt-4-turbo":        {4096, 128000},
+	"o1-mini":            {65536, 128000},
+	// Anthropic
+	"claude-opus-4-6":         {32000, 200000},
+	"claude-sonnet-4-6":  {16000, 200000},
+	"claude-haiku-4-5-20251001":  {16000, 200000},
+	// DeepSeek
+	"deepseek-coder":     {8192, 32768},
+	"deepseek-r1":        {16384, 65536},
+	// Llama
+	"llama3.1:8b":        {4096, 131072},
+	"llama3.1:70b":       {4096, 131072},
+	"llama3.2:3b":        {4096, 131072},
+	// Mistral
+	"mistral:7b":         {4096, 32768},
+	"codestral":          {8192, 32768},
+}
+
+// GetMaxTokens возвращает лимит токенов ответа для данного конфига провайдера
+func (pc ProviderConfig) GetMaxTokens() int {
+	if pc.MaxTokens > 0 {
+		return pc.MaxTokens
+	}
+	if lim, ok := modelLimits[pc.Model]; ok {
+		return lim[0]
+	}
+	// Консервативный дефолт для неизвестных моделей
+	return 4096
+}
+
+// GetContextLength возвращает размер контекстного окна
+func (pc ProviderConfig) GetContextLength() int {
+	if pc.ContextLength > 0 {
+		return pc.ContextLength
+	}
+	if lim, ok := modelLimits[pc.Model]; ok {
+		return lim[1]
+	}
+	// Консервативный дефолт
+	return 8192
 }
 
 // Config — главный конфиг TermCode
@@ -37,9 +104,6 @@ type Config struct {
 
 	// Тема (dark / light)
 	Theme string `json:"theme"`
-
-	// Максимум токенов в ответе
-	MaxTokens int `json:"max_tokens"`
 
 	// Системный промпт
 	SystemPrompt string `json:"system_prompt"`
@@ -68,7 +132,6 @@ func DefaultConfig() *Config {
 			},
 		},
 		Theme:     "dark",
-		MaxTokens: 8192,
 		SystemPrompt: `You are TermCode — an AI coding assistant running inside a terminal on Android (Termux).
 
 TOOL USAGE — CRITICAL:

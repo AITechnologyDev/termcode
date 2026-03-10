@@ -110,9 +110,13 @@ type Model struct {
 	pullTotal      int64  // байт всего
 
 	// ── Статистика генерации ──────────────────────────────────────────────
-	genStartTime   time.Time // когда начали генерацию
-	genTokens      int       // примерное кол-во токенов (по словам)
-	genSpeed       float64   // токен/сек
+	genStartTime   time.Time
+	genTokens      int
+	genSpeed       float64
+
+	// ── Использование контекста ───────────────────────────────────────────
+	contextUsed  int // токенов в текущем контексте
+	contextLimit int // лимит контекста модели
 
 	// ── Интерактивный вопрос от AI ────────────────────────────────────────
 	question        string   // текст вопроса
@@ -411,32 +415,42 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 
 // streamAI запускает запрос к AI провайдеру
 func (m *Model) streamAI() tea.Cmd {
+	pc, _ := m.cfg.ActiveProviderConfig()
+	maxTokens := pc.GetMaxTokens()
+	contextLength := pc.GetContextLength()
+
 	// Строим сообщения для API
-	apiMsgs := make([]ai.Message, 0, len(m.sess.Messages))
+	rawMsgs := make([]ai.Message, 0, len(m.sess.Messages))
 	for _, msg := range m.sess.Messages {
 		if msg.Role == session.RoleSystem {
 			continue
 		}
-		apiMsgs = append(apiMsgs, ai.Message{
+		rawMsgs = append(rawMsgs, ai.Message{
 			Role:    string(msg.Role),
 			Content: msg.Content,
 		})
 	}
 
 	systemPrompt := m.cfg.SystemPrompt + "\n\n" + tools.ToolDefs() +
-		"\n\nРабочая директория: " + m.workDir
+		"\n\nWorking directory: " + m.workDir
+
+	// Обрезаем историю если не влезает в контекст
+	apiMsgs, dropped := ai.TrimMessages(rawMsgs, systemPrompt, contextLength-maxTokens)
+	if dropped > 0 {
+		m.errMsg = fmt.Sprintf("контекст: удалено %d старых сообщений", dropped)
+	}
+
+	// Обновляем счётчик использования контекста
+	m.contextUsed = ai.SumTokens(apiMsgs) + ai.EstimateTokens(systemPrompt)
+	m.contextLimit = contextLength
 
 	provider := m.provider
-	maxTok := m.cfg.MaxTokens
 
 	return func() tea.Msg {
-		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTok)
+		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTokens)
 		if err != nil {
 			return aiChunkMsg{err: err}
 		}
-
-		// Читаем первый чанк и передаём канал дальше через рекурсивные Cmd
-		// Но bubbletea не поддерживает каналы напрямую — используем polling
 		chunk, ok := <-ch
 		if !ok {
 			return aiChunkMsg{done: true}
@@ -444,7 +458,6 @@ func (m *Model) streamAI() tea.Cmd {
 		if chunk.Err != nil {
 			return aiChunkMsg{err: chunk.Err}
 		}
-		// Передаём оставшийся канал через замыкание
 		return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch}
 	}
 }
@@ -792,10 +805,33 @@ func (m Model) renderStatusBar() string {
 			left = statusErrStyle.Render("✗ " + m.errMsg)
 		} else {
 			left = statusOKStyle.Render(fmt.Sprintf("✓ Готов — %d сообщений", len(m.sess.Messages)))
-			// Показываем финальную скорость последней генерации
-			if m.genSpeed > 0 {
-				right = keyHintStyle.Render(fmt.Sprintf("последний ответ: %.1f tok/s · %d tok", m.genSpeed, m.genTokens))
-			}
+		}
+		if m.genSpeed > 0 {
+			right = keyHintStyle.Render(fmt.Sprintf("последний: %.1f tok/s · %d tok", m.genSpeed, m.genTokens))
+		}
+	}
+
+	// Индикатор контекста справа
+	if m.contextLimit > 0 {
+		pct := 0
+		if m.contextLimit > 0 {
+			pct = m.contextUsed * 100 / m.contextLimit
+		}
+		ctxStyle := keyHintStyle
+		if pct >= 80 {
+			ctxStyle = statusErrStyle
+		} else if pct >= 60 {
+			ctxStyle = statusBusyStyle
+		}
+		ctxStr := ctxStyle.Render(fmt.Sprintf("ctx %d%% (%s/%s)",
+			pct,
+			formatTok(m.contextUsed),
+			formatTok(m.contextLimit),
+		))
+		if right != "" {
+			right = right + "  " + ctxStr
+		} else {
+			right = ctxStr
 		}
 	}
 
@@ -807,6 +843,15 @@ func (m Model) renderStatusBar() string {
 		return statusBarStyle.Width(m.width).Render(left + strings.Repeat(" ", gap) + right)
 	}
 	return statusBarStyle.Width(m.width).Render(left)
+}
+
+// formatTok форматирует токены: 1200 → "1.2k", 500 → "500"
+func formatTok(n int) string {
+	if n >= 1000 {
+		k := float64(n) / 1000.0
+		return fmt.Sprintf("%.1fk", k)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // renderHints отрисовывает подсказки клавиш

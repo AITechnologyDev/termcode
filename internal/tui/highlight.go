@@ -318,6 +318,13 @@ func highlightLine(line string, def langDef, inBlock *bool) string {
 
 // ── Токенизация строки ────────────────────────────────────────────────────────
 
+// span — диапазон символов с типом токена
+type span struct {
+	start, end int
+	kind       tokenKind
+	text       string
+}
+
 var (
 	// Строки в кавычках (с поддержкой escape)
 	reString1 = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
@@ -332,13 +339,10 @@ var (
 )
 
 func tokenizeLine(line string, def langDef) string {
-	// Строим set для быстрого поиска
 	kwSet := toSet(def.keywords)
 	biSet := toSet(def.builtins)
 	tySet := toSet(def.types)
 
-	// Собираем "дыры" — диапазоны которые заняты строками/числами
-	type span struct{ start, end int; kind tokenKind; text string }
 	var spans []span
 
 	// Строки (приоритет выше всего)
@@ -473,11 +477,10 @@ func toSet(words []string) map[string]bool {
 	return s
 }
 
-func removeDuplicates(spans []struct{ start, end int; kind tokenKind; text string }) []struct{ start, end int; kind tokenKind; text string } {
+func removeDuplicates(spans []span) []span {
 	if len(spans) == 0 {
 		return spans
 	}
-	// Сортируем по start
 	for i := 0; i < len(spans); i++ {
 		for j := i + 1; j < len(spans); j++ {
 			if spans[j].start < spans[i].start {
@@ -485,7 +488,6 @@ func removeDuplicates(spans []struct{ start, end int; kind tokenKind; text strin
 			}
 		}
 	}
-	// Убираем пересечения — первый найденный выигрывает
 	result := spans[:0]
 	maxEnd := 0
 	for _, sp := range spans {

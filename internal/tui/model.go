@@ -26,11 +26,12 @@ import (
 type state int
 
 const (
-	stateModelSelect state = iota // выбор модели при старте
-	stateChat                     // основной чат
-	stateThinking                 // AI генерирует ответ
-	statePulling                  // ollama pull — загрузка модели
-	stateQuestion                 // AI задал уточняющий вопрос с вариантами
+	stateModelSelect state = iota
+	stateChat
+	stateThinking
+	statePulling
+	stateQuestion
+	statePalette // Ctrl+P — палитра команд
 )
 
 // ── Сообщения BubbleTea ───────────────────────────────────────────────────────
@@ -64,6 +65,14 @@ type pullProgressMsg struct {
 	total     int64
 	done      bool
 	err       error
+}
+
+// paletteItem — одна команда в палитре
+type paletteItem struct {
+	key         string // горячая клавиша или команда
+	title       string // название
+	description string // пояснение
+	action      func(m Model) (Model, tea.Cmd)
 }
 
 // ── Модель TUI ────────────────────────────────────────────────────────────────
@@ -119,9 +128,14 @@ type Model struct {
 	contextLimit int // лимит контекста модели
 
 	// ── Интерактивный вопрос от AI ────────────────────────────────────────
-	question        string   // текст вопроса
-	questionOptions []string // варианты ответа (могут быть пустыми)
-	questionCursor  int      // текущий курсор на варианте
+	question        string
+	questionOptions []string
+	questionCursor  int
+
+	// ── Палитра команд (Ctrl+P) ───────────────────────────────────────────
+	paletteCursor  int
+	paletteFilter  string
+	paletteItems   []paletteItem
 }
 
 // New создаёт новую TUI модель
@@ -167,7 +181,7 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 	sp.Spinner = spinner.Dot
 	sp.Style = spinnerStyle
 
-	return &Model{
+	m := &Model{
 		cfg:          cfg,
 		provider:     provider,
 		sess:         sess,
@@ -178,7 +192,9 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		spinner:      sp,
 		currentState: stateModelSelect,
 		modelsLoading: true,
-	}, nil
+	}
+	m.paletteItems = buildPaletteItems()
+	return m, nil
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -279,6 +295,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// ── Клавиши в режиме палитры (Ctrl+P) ────────────────────────────────
+		if m.currentState == statePalette {
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				m.currentState = stateChat
+				m.paletteFilter = ""
+				return m, nil
+			case tea.KeyUp:
+				if m.paletteCursor > 0 {
+					m.paletteCursor--
+				}
+				return m, nil
+			case tea.KeyDown:
+				filtered := filterPaletteItems(m.paletteItems, m.paletteFilter)
+				if m.paletteCursor < len(filtered)-1 {
+					m.paletteCursor++
+				}
+				return m, nil
+			case tea.KeyEnter, tea.KeyCR:
+				filtered := filterPaletteItems(m.paletteItems, m.paletteFilter)
+				if m.paletteCursor < len(filtered) {
+					return m.executePaletteItem(filtered[m.paletteCursor])
+				}
+				return m, nil
+			case tea.KeyBackspace:
+				if len(m.paletteFilter) > 0 {
+					m.paletteFilter = m.paletteFilter[:len(m.paletteFilter)-1]
+					m.paletteCursor = 0
+				}
+				return m, nil
+			case tea.KeyRunes:
+				m.paletteFilter += string(msg.Runes)
+				m.paletteCursor = 0
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// ── Клавиши в режиме pull ─────────────────────────────────────────────
 		if m.currentState == statePulling {
 			if msg.Type == tea.KeyCtrlC {
@@ -332,6 +386,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.sess.Save(); err != nil {
 				m.errMsg = "Ошибка сохранения: " + err.Error()
 			}
+			return m, nil
+		case tea.KeyCtrlP:
+			// Ctrl+P — открыть палитру команд
+			m.currentState = statePalette
+			m.paletteCursor = 0
+			m.paletteFilter = ""
 			return m, nil
 		case tea.KeyEsc:
 			m.errMsg = ""
@@ -667,7 +727,7 @@ func (m Model) View() string {
 
 	hints := m.renderHints()
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	base := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		chatView,
 		dividerStyle.Render(strings.Repeat("─", m.width)),
@@ -675,6 +735,13 @@ func (m Model) View() string {
 		statusBar,
 		hints,
 	)
+
+	// Палитра команд — оверлей поверх основного экрана
+	if m.currentState == statePalette {
+		return renderOverlay(base, m.renderPalette(), m.width, m.height)
+	}
+
+	return base
 }
 
 // renderModelSelect — экран выбора модели
@@ -859,8 +926,8 @@ func (m Model) renderHints() string {
 	hints := []string{
 		keyStyle.Render("Enter") + keyHintStyle.Render(" отправить"),
 		keyStyle.Render("Shift+Enter") + keyHintStyle.Render(" перенос"),
-		keyStyle.Render("/models") + keyHintStyle.Render(" сменить модель"),
-		keyStyle.Render("/pull <модель>") + keyHintStyle.Render(" скачать"),
+		keyStyle.Render("Ctrl+P") + keyHintStyle.Render(" команды"),
+		keyStyle.Render("/models") + keyHintStyle.Render(" модели"),
 		keyStyle.Render("Ctrl+S") + keyHintStyle.Render(" сохранить"),
 		keyStyle.Render("Ctrl+C") + keyHintStyle.Render(" выйти"),
 	}
@@ -1375,4 +1442,264 @@ func (m Model) renderQuestionPanel() string {
 	sb.WriteString(inputStyle.Width(w).Render(prompt + m.input.View()))
 
 	return sb.String()
+}
+
+// ── Палитра команд (Ctrl+P) ───────────────────────────────────────────────────
+
+// buildPaletteItems возвращает полный список команд палитры
+func buildPaletteItems() []paletteItem {
+	return []paletteItem{
+		{
+			key: "Ctrl+P", title: "Палитра команд",
+			description: "Открыть эту палитру",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = statePalette
+				m.paletteCursor = 0
+				m.paletteFilter = ""
+				return m, nil
+			},
+		},
+		{
+			key: "/models", title: "Сменить модель",
+			description: "Показать список моделей Ollama",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateModelSelect
+				m.modelsLoading = true
+				m.paletteFilter = ""
+				return m, fetchOllamaModels(m.cfg)
+			},
+		},
+		{
+			key: "/pull", title: "Скачать модель (ollama pull)",
+			description: "Ввести имя модели для загрузки",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateChat
+				m.input.SetValue("/pull ")
+				m.paletteFilter = ""
+				return m, nil
+			},
+		},
+		{
+			key: "new", title: "Новая сессия",
+			description: "Начать новый диалог (текущий сохранится)",
+			action: func(m Model) (Model, tea.Cmd) {
+				_ = m.sess.Save()
+				pc, _ := m.cfg.ActiveProviderConfig()
+				m.sess = session.New(m.workDir, string(m.cfg.ActiveProvider), pc.Model)
+				m.streaming = ""
+				m.errMsg = ""
+				m.currentState = stateChat
+				m.paletteFilter = ""
+				m.refreshViewport()
+				return m, nil
+			},
+		},
+		{
+			key: "Ctrl+S", title: "Сохранить сессию",
+			description: "Сохранить историю диалога на диск",
+			action: func(m Model) (Model, tea.Cmd) {
+				if err := m.sess.Save(); err != nil {
+					m.errMsg = "Ошибка сохранения: " + err.Error()
+				}
+				m.currentState = stateChat
+				m.paletteFilter = ""
+				return m, nil
+			},
+		},
+		{
+			key: "ls", title: "Список файлов проекта",
+			description: "Показать дерево файлов в рабочей директории",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateChat
+				m.paletteFilter = ""
+				result := m.executor.ListFiles("")
+				content := result.Output
+				if !result.OK {
+					content = "Ошибка: " + result.Error
+				}
+				m.sess.AddMessage(session.RoleAssistant,
+					"```\n"+content+"\n```")
+				m.refreshViewport()
+				m.scrollToBottom = true
+				return m, nil
+			},
+		},
+		{
+			key: "git", title: "Git статус",
+			description: "Показать git status проекта",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateChat
+				m.paletteFilter = ""
+				result := m.executor.RunCommand("git status --short 2>&1 || echo '(не git репозиторий)'")
+				m.sess.AddMessage(session.RoleAssistant, "```\n"+result.Output+"\n```")
+				m.refreshViewport()
+				m.scrollToBottom = true
+				return m, nil
+			},
+		},
+		{
+			key: "build", title: "Go build",
+			description: "Запустить go build ./...",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateThinking
+				m.paletteFilter = ""
+				m.sess.AddMessage(session.RoleUser, "Run: go build ./...")
+				m.genStartTime = time.Now()
+				m.genTokens = 0
+				m.refreshViewport()
+				return m, tea.Batch(m.streamAI(), m.spinner.Tick)
+			},
+		},
+		{
+			key: "test", title: "Go test",
+			description: "Запустить go test ./...",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateThinking
+				m.paletteFilter = ""
+				m.sess.AddMessage(session.RoleUser, "Run: go test ./... and show results")
+				m.genStartTime = time.Now()
+				m.genTokens = 0
+				m.refreshViewport()
+				return m, tea.Batch(m.streamAI(), m.spinner.Tick)
+			},
+		},
+		{
+			key: "ctx", title: "Показать использование контекста",
+			description: "Сколько токенов занимает текущая история",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateChat
+				m.paletteFilter = ""
+				pct := 0
+				if m.contextLimit > 0 {
+					pct = m.contextUsed * 100 / m.contextLimit
+				}
+				info := fmt.Sprintf(
+					"**Контекст:** %s / %s токенов (%d%%)\n**Сообщений:** %d\n**Модель:** %s",
+					formatTok(m.contextUsed), formatTok(m.contextLimit), pct,
+					len(m.sess.Messages), m.provider.Model(),
+				)
+				m.sess.AddMessage(session.RoleAssistant, info)
+				m.refreshViewport()
+				m.scrollToBottom = true
+				return m, nil
+			},
+		},
+		{
+			key: "clear", title: "Очистить экран",
+			description: "Очистить viewport (история сохраняется)",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateChat
+				m.paletteFilter = ""
+				m.viewport.SetContent("")
+				return m, nil
+			},
+		},
+	}
+}
+
+// filterPaletteItems фильтрует команды по строке поиска
+func filterPaletteItems(items []paletteItem, filter string) []paletteItem {
+	if filter == "" {
+		return items
+	}
+	f := strings.ToLower(filter)
+	var result []paletteItem
+	for _, item := range items {
+		if strings.Contains(strings.ToLower(item.title), f) ||
+			strings.Contains(strings.ToLower(item.key), f) ||
+			strings.Contains(strings.ToLower(item.description), f) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// executePaletteItem выполняет выбранную команду
+func (m Model) executePaletteItem(item paletteItem) (tea.Model, tea.Cmd) {
+	newM, cmd := item.action(m)
+	return newM, cmd
+}
+
+// renderPalette отрисовывает палитру команд
+func (m Model) renderPalette() string {
+	w := m.width - 8
+	if w < 30 {
+		w = 30
+	}
+
+	var sb strings.Builder
+
+	// Заголовок
+	title := headerStyle.Render(" ⌘ Палитра команд ")
+	sb.WriteString(title + "\n")
+
+	// Строка поиска
+	searchPrompt := inputPromptStyle.Render("🔍 ")
+	searchVal := m.paletteFilter
+	if searchVal == "" {
+		searchVal = keyHintStyle.Render("Введи для поиска...")
+	}
+	sb.WriteString(inputContainerFocusStyle.Width(w).Render(searchPrompt+searchVal) + "\n\n")
+
+	// Список команд
+	filtered := filterPaletteItems(m.paletteItems, m.paletteFilter)
+	if len(filtered) == 0 {
+		sb.WriteString(keyHintStyle.Render("  Ничего не найдено") + "\n")
+	}
+	for i, item := range filtered {
+		keyPart := keyStyle.Render(fmt.Sprintf("%-10s", item.key))
+		titlePart := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render(item.title)
+		descPart := keyHintStyle.Render("  " + item.description)
+		line := fmt.Sprintf("  %s  %s%s", keyPart, titlePart, descPart)
+		if i == m.paletteCursor {
+			line = userBubbleStyle.Width(w).Render(line)
+		}
+		sb.WriteString(line + "\n")
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(keyHintStyle.Render("  ↑↓ навигация  Enter выбрать  Esc закрыть"))
+	return sb.String()
+}
+
+// renderOverlay накладывает overlay поверх base по центру
+func renderOverlay(base, overlay string, width, height int) string {
+	overlayLines := strings.Split(overlay, "\n")
+	overlayH := len(overlayLines)
+	overlayW := 0
+	for _, l := range overlayLines {
+		if lw := lipgloss.Width(l); lw > overlayW {
+			overlayW = lw
+		}
+	}
+
+	// Центрируем
+	startY := (height - overlayH) / 3 // чуть выше центра
+	startX := (width - overlayW) / 2
+	if startX < 0 {
+		startX = 0
+	}
+	if startY < 0 {
+		startY = 0
+	}
+
+	// Рисуем overlay поверх base построчно
+	baseLines := strings.Split(base, "\n")
+	for i, ol := range overlayLines {
+		y := startY + i
+		if y >= len(baseLines) {
+			baseLines = append(baseLines, "")
+		}
+		bl := baseLines[y]
+		// Вставляем overlay в строку
+		blRunes := []rune(bl)
+		olRunes := []rune(ol)
+		// Дополняем пробелами если нужно
+		for len(blRunes) < startX+len(olRunes) {
+			blRunes = append(blRunes, ' ')
+		}
+		copy(blRunes[startX:], olRunes)
+		baseLines[y] = string(blRunes)
+	}
+	return strings.Join(baseLines, "\n")
 }

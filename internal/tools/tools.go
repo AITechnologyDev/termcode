@@ -111,14 +111,75 @@ func (e *Executor) PatchFile(path, oldStr, newStr string) Result {
 		return fail(fmt.Sprintf("строка для замены не найдена в %s", path))
 	}
 
-	// Заменяем только первое вхождение
 	patched := strings.Replace(content, oldStr, newStr, 1)
 
 	if err := os.WriteFile(abs, []byte(patched), 0640); err != nil {
 		return fail(fmt.Sprintf("запись патча: %v", err))
 	}
 
-	return ok(fmt.Sprintf("патч применён в %s", path))
+	// Считаем статистику изменений
+	diffStat := diffStats(path, oldStr, newStr)
+	return ok(fmt.Sprintf("патч применён в %s\n%s", path, diffStat))
+}
+
+// diffStats генерирует компактную diff-статистику в стиле git
+func diffStats(path, oldStr, newStr string) string {
+	oldLines := strings.Split(strings.TrimRight(oldStr, "\n"), "\n")
+	newLines := strings.Split(strings.TrimRight(newStr, "\n"), "\n")
+
+	removed := 0
+	added := 0
+
+	// Простой подсчёт: строки только в old = удалены, только в new = добавлены
+	oldSet := make(map[string]int)
+	for _, l := range oldLines {
+		oldSet[l]++
+	}
+	newSet := make(map[string]int)
+	for _, l := range newLines {
+		newSet[l]++
+	}
+	for l, cnt := range oldSet {
+		diff := cnt - newSet[l]
+		if diff > 0 {
+			removed += diff
+		}
+	}
+	for l, cnt := range newSet {
+		diff := cnt - oldSet[l]
+		if diff > 0 {
+			added += diff
+		}
+	}
+
+	// Визуальная полоска как в git --stat
+	total := added + removed
+	barWidth := 20
+	addBars := 0
+	delBars := 0
+	if total > 0 {
+		addBars = added * barWidth / total
+		delBars = removed * barWidth / total
+		if addBars+delBars < barWidth && (added > 0 || removed > 0) {
+			// Минимум одна полоска для ненулевого значения
+			if added > 0 && addBars == 0 {
+				addBars = 1
+			}
+			if removed > 0 && delBars == 0 {
+				delBars = 1
+			}
+		}
+	}
+
+	bar := strings.Repeat("+", addBars) + strings.Repeat("-", delBars)
+	return fmt.Sprintf("%s | +%d -%d %s", path, added, removed, bar)
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
 }
 
 // ListFiles возвращает дерево файлов (рекурсивно, макс глубина 4)

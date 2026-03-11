@@ -26,12 +26,13 @@ import (
 type state int
 
 const (
-	stateModelSelect state = iota
+	stateModelSelect   state = iota
 	stateChat
 	stateThinking
 	statePulling
 	stateQuestion
-	statePalette // Ctrl+P — палитра команд
+	statePalette
+	stateSessionLoad // загрузка сохранённой сессии
 )
 
 // ── Сообщения BubbleTea ───────────────────────────────────────────────────────
@@ -65,6 +66,11 @@ type pullProgressMsg struct {
 	total     int64
 	done      bool
 	err       error
+}
+
+// sessionsLoadedMsg — список сохранённых сессий загружен
+type sessionsLoadedMsg struct {
+	sessions []*session.Session
 }
 
 // paletteItem — одна команда в палитре
@@ -136,6 +142,11 @@ type Model struct {
 	paletteCursor  int
 	paletteFilter  string
 	paletteItems   []paletteItem
+
+	// ── Загрузка сессий ───────────────────────────────────────────────────
+	savedSessions    []*session.Session
+	sessionCursor    int
+	sessionsLoading  bool
 }
 
 // New создаёт новую TUI модель
@@ -261,6 +272,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	// ── Список сессий загружен ────────────────────────────────────────────────
+	case sessionsLoadedMsg:
+		m.sessionsLoading = false
+		m.savedSessions = msg.sessions
+		m.sessionCursor = 0
+		return m, nil
+
 	case tea.KeyMsg:
 		// ── Клавиши в режиме выбора модели ───────────────────────────────────
 		if m.currentState == stateModelSelect && !m.modelsLoading {
@@ -338,6 +356,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyCtrlC {
 				m.currentState = stateChat
 				m.pullModelName = ""
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// ── Клавиши в режиме загрузки сессий ─────────────────────────────────
+		if m.currentState == stateSessionLoad {
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				m.currentState = stateChat
+				return m, nil
+			case tea.KeyUp:
+				if m.sessionCursor > 0 {
+					m.sessionCursor--
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.sessionCursor < len(m.savedSessions)-1 {
+					m.sessionCursor++
+				}
+				return m, nil
+			case tea.KeyEnter:
+				if m.sessionCursor < len(m.savedSessions) {
+					return m.loadSession(m.savedSessions[m.sessionCursor])
+				}
+				return m, nil
+			case tea.KeyDelete, tea.KeyBackspace:
+				// Backspace на сессии — удалить её
+				if m.sessionCursor < len(m.savedSessions) {
+					return m.deleteSession(m.savedSessions[m.sessionCursor])
+				}
 				return m, nil
 			}
 			return m, nil
@@ -713,6 +762,11 @@ func (m Model) View() string {
 		return m.renderPullScreen()
 	}
 
+	// Экран загрузки сессий
+	if m.currentState == stateSessionLoad {
+		return m.renderSessionLoad()
+	}
+
 	header := m.renderHeader()
 	chatView := m.viewport.View()
 	statusBar := m.renderStatusBar()
@@ -1061,9 +1115,11 @@ func renderMarkdown(text string, width int) string {
 				code := strings.Join(codeLines, "\n")
 				label := ""
 				if codeLang != "" {
-					label = lipgloss.NewStyle().Foreground(colorMuted).Render(" " + codeLang + " ") + "\n"
+					label = lipgloss.NewStyle().Foreground(colorMuted).Render(" "+codeLang+" ") + "\n"
 				}
-				sb.WriteString(codeBlockStyle.Width(width-4).Render(label+code))
+				// Применяем syntax highlighting
+				highlighted := HighlightCode(code, codeLang)
+				sb.WriteString(codeBlockStyle.Width(width-4).Render(label + highlighted))
 				sb.WriteString("\n")
 				inCodeBlock = false
 				codeLines = nil
@@ -1107,7 +1163,8 @@ func renderMarkdown(text string, width int) string {
 
 	// Незакрытый код-блок
 	if inCodeBlock && len(codeLines) > 0 {
-		sb.WriteString(codeBlockStyle.Width(width-4).Render(strings.Join(codeLines, "\n")))
+		highlighted := HighlightCode(strings.Join(codeLines, "\n"), codeLang)
+		sb.WriteString(codeBlockStyle.Width(width-4).Render(highlighted))
 		sb.WriteString("\n")
 	}
 
@@ -1495,6 +1552,16 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
+			key: "sessions", title: "Загрузить сессию",
+			description: "Открыть список сохранённых диалогов",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateSessionLoad
+				m.sessionsLoading = true
+				m.paletteFilter = ""
+				return m, loadSessions()
+			},
+		},
+		{
 			key: "Ctrl+S", title: "Сохранить сессию",
 			description: "Сохранить историю диалога на диск",
 			action: func(m Model) (Model, tea.Cmd) {
@@ -1702,4 +1769,111 @@ func renderOverlay(base, overlay string, width, height int) string {
 		baseLines[y] = string(blRunes)
 	}
 	return strings.Join(baseLines, "\n")
+}
+
+// ── Загрузка и управление сессиями ───────────────────────────────────────────
+
+// loadSessions асинхронно читает список сессий с диска
+func loadSessions() tea.Cmd {
+	return func() tea.Msg {
+		sessions, _ := session.LoadAll()
+		return sessionsLoadedMsg{sessions: sessions}
+	}
+}
+
+// loadSession загружает выбранную сессию и переходит в чат
+func (m Model) loadSession(s *session.Session) (tea.Model, tea.Cmd) {
+	// Сохраняем текущую сессию перед переключением
+	_ = m.sess.Save()
+
+	m.sess = s
+	m.currentState = stateChat
+	m.streaming = ""
+	m.errMsg = ""
+	m.contextUsed = 0
+
+	m.refreshViewport()
+	m.scrollToBottom = true
+	return m, nil
+}
+
+// deleteSession удаляет сессию и перезагружает список
+func (m Model) deleteSession(s *session.Session) (tea.Model, tea.Cmd) {
+	_ = session.Delete(s.ID)
+	m.sessionsLoading = true
+	return m, loadSessions()
+}
+
+// renderSessionLoad — экран выбора сессии для загрузки
+func (m Model) renderSessionLoad() string {
+	var sb strings.Builder
+
+	title := headerStyle.Render(" TermCode — Сессии ")
+	sb.WriteString(title + "\n\n")
+
+	if m.sessionsLoading {
+		sb.WriteString(fmt.Sprintf("  %s Загружаем сессии...\n", m.spinner.View()))
+		return sb.String()
+	}
+
+	if len(m.savedSessions) == 0 {
+		sb.WriteString(keyHintStyle.Render("  Нет сохранённых сессий.\n\n"))
+		sb.WriteString(keyStyle.Render("  Esc") + keyHintStyle.Render(" — назад\n"))
+		return sb.String()
+	}
+
+	sb.WriteString(keyHintStyle.Render(
+		"  ↑↓ навигация  Enter загрузить  Backspace удалить  Esc назад\n\n"))
+
+	for i, s := range m.savedSessions {
+		// Форматируем дату
+		age := formatAge(s.UpdatedAt)
+		msgs := fmt.Sprintf("%d сообщ.", len(s.Messages))
+		model := s.Model
+		if len(model) > 20 {
+			model = model[:18] + ".."
+		}
+
+		line := fmt.Sprintf("  %-40s  %-8s  %-22s  %s",
+			truncate(s.Title, 40),
+			msgs,
+			model,
+			age,
+		)
+
+		if i == m.sessionCursor {
+			sb.WriteString(userBubbleStyle.Width(m.width-2).Render("▶"+line) + "\n")
+		} else {
+			sb.WriteString(keyHintStyle.Render(" "+line) + "\n")
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("\n  %d сессий сохранено", len(m.savedSessions)))
+	return sb.String()
+}
+
+// formatAge возвращает человекочитаемое время ("2ч назад", "3д назад")
+func formatAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "только что"
+	case d < time.Hour:
+		return fmt.Sprintf("%dм назад", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dч назад", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dд назад", int(d.Hours()/24))
+	default:
+		return t.Format("02.01.06")
+	}
+}
+
+// truncate обрезает строку до maxLen символов
+func truncate(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-2]) + ".."
 }

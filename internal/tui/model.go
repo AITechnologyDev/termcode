@@ -728,7 +728,8 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 		m.scrollToBottom = true
 
 		return m, func() tea.Msg {
-			return toolDoneMsg{call: call, executor: executor}
+			result := executor.Dispatch(call.Tool, call.Params)
+			return toolDoneMsg{call: call, result: result}
 		}
 	}
 

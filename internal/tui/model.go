@@ -313,7 +313,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.paletteCursor++
 				}
 				return m, nil
-			case tea.KeyEnter, tea.KeyCR:
+			case tea.KeyEnter:
 				filtered := filterPaletteItems(m.paletteItems, m.paletteFilter)
 				if m.paletteCursor < len(filtered) {
 					return m.executePaletteItem(filtered[m.paletteCursor])

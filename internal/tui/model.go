@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -102,9 +103,10 @@ type Model struct {
 	spinner  spinner.Model
 
 	// Состояние
-	currentState state
-	streaming    string // буфер текущего стримингового ответа
-	errMsg       string
+	currentState  state
+	streaming     string      // буфер текущего стримингового ответа
+	errMsg        string
+	streamCancel  func()      // отмена текущего стрима (предотвращает goroutine leak)
 
 	// Размеры терминала
 	width  int
@@ -147,6 +149,9 @@ type Model struct {
 	savedSessions    []*session.Session
 	sessionCursor    int
 	sessionsLoading  bool
+
+	// ── Think-блоки (reasoning) ───────────────────────────────────────────
+	thinkExpanded map[int]bool // msgIndex → раскрыт ли think-блок
 }
 
 // New создаёт новую TUI модель
@@ -205,6 +210,7 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		modelsLoading: true,
 	}
 	m.paletteItems = buildPaletteItems()
+	m.thinkExpanded = make(map[int]bool)
 	return m, nil
 }
 
@@ -404,7 +410,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case tea.KeyDown:
-				if m.questionCursor < len(m.questionOptions) {
+				if len(m.questionOptions) > 0 && m.questionCursor < len(m.questionOptions)-1 {
 					m.questionCursor++
 				}
 				return m, nil
@@ -429,6 +435,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
+			if m.streamCancel != nil {
+				m.streamCancel()
+			}
 			_ = m.sess.Save()
 			return m, tea.Quit
 		case tea.KeyCtrlS:
@@ -444,6 +453,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyEsc:
 			m.errMsg = ""
+		case tea.KeyRunes:
+			if string(msg.Runes) == "T" {
+				return m.toggleLastThink(), nil
+			}
 		case tea.KeyEnter:
 			text := strings.TrimSpace(m.input.Value())
 			if text == "/models" {
@@ -543,31 +556,43 @@ func (m *Model) streamAI() tea.Cmd {
 	systemPrompt := m.cfg.SystemPrompt + "\n\n" + tools.ToolDefs() +
 		"\n\nWorking directory: " + m.workDir
 
-	// Обрезаем историю если не влезает в контекст
 	apiMsgs, dropped := ai.TrimMessages(rawMsgs, systemPrompt, contextLength-maxTokens)
 	if dropped > 0 {
 		m.errMsg = fmt.Sprintf("контекст: удалено %d старых сообщений", dropped)
 	}
 
-	// Обновляем счётчик использования контекста
 	m.contextUsed = ai.SumTokens(apiMsgs) + ai.EstimateTokens(systemPrompt)
 	m.contextLimit = contextLength
+
+	// Отменяем предыдущий стрим если он ещё идёт
+	if m.streamCancel != nil {
+		m.streamCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.streamCancel = cancel
 
 	provider := m.provider
 
 	return func() tea.Msg {
 		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTokens)
 		if err != nil {
+			cancel()
 			return aiChunkMsg{err: err}
 		}
-		chunk, ok := <-ch
-		if !ok {
+
+		select {
+		case <-ctx.Done():
+			// Стрим отменён — горутина провайдера завершится сама когда закроет ch
 			return aiChunkMsg{done: true}
+		case chunk, ok := <-ch:
+			if !ok {
+				return aiChunkMsg{done: true}
+			}
+			if chunk.Err != nil {
+				return aiChunkMsg{err: chunk.Err}
+			}
+			return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch, ctx: ctx}
 		}
-		if chunk.Err != nil {
-			return aiChunkMsg{err: chunk.Err}
-		}
-		return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch}
 	}
 }
 
@@ -576,6 +601,7 @@ type streamReaderMsg struct {
 	content string
 	done    bool
 	ch      <-chan ai.StreamChunk
+	ctx     context.Context
 }
 
 // handleAIChunk обрабатывает кусок ответа AI
@@ -618,7 +644,23 @@ func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
 	}
 
 	ch := msg.ch
+	ctx := msg.ctx
 	return m, func() tea.Msg {
+		// Уважаем отмену — если контекст закрыт, завершаем стрим
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return aiChunkMsg{done: true}
+			case chunk, ok := <-ch:
+				if !ok {
+					return aiChunkMsg{done: true}
+				}
+				if chunk.Err != nil {
+					return aiChunkMsg{err: chunk.Err}
+				}
+				return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch, ctx: ctx}
+			}
+		}
 		chunk, ok := <-ch
 		if !ok {
 			return aiChunkMsg{done: true}
@@ -663,22 +705,22 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 	fullText := m.streaming
 	m.streaming = ""
 
-	// Фильтруем <think>...</think> теги (Qwen3, GLM, DeepSeek reasoning)
-	fullText = filterThinkTags(fullText)
-
 	// Сохраняем финальную статистику
 	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
 		m.genSpeed = float64(m.genTokens) / elapsed
 	}
 
-	// Парсим tool calls из ответа
-	calls, cleanText := ai.ParseToolCalls(fullText)
+	// В сессию сохраняем ОРИГИНАЛЬНЫЙ текст с <think> тегами
+	// Это позволяет потом показать/скрыть reasoning
+	// Для tool calls парсим только видимую часть
+	visibleText := filterThinkTags(fullText)
+	calls, cleanText := ai.ParseToolCalls(visibleText)
 
-	// Добавляем ответ ассистента в историю
-	m.sess.AddMessage(session.RoleAssistant, cleanText)
+	// Сохраняем в сессию с тегами (для истории и replay)
+	rawForSession := replaceThinkForSession(fullText, cleanText)
+	m.sess.AddMessage(session.RoleAssistant, rawForSession)
 
 	if len(calls) > 0 {
-		// Есть вызовы инструментов — выполняем первый
 		call := calls[0]
 		executor := m.executor
 
@@ -686,33 +728,55 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 		m.scrollToBottom = true
 
 		return m, func() tea.Msg {
-			result := executor.Dispatch(call.Tool, call.Params)
-			return toolDoneMsg{call: call, result: result}
+			return toolDoneMsg{call: call, executor: executor}
 		}
 	}
 
-	// Нет tool calls — проверяем не вопрос ли это с вариантами
-	m.currentState = stateChat
-
-	// Парсим ```question блок если есть
-	if q, opts := parseQuestionBlock(cleanText); q != "" {
-		m.question = q
-		m.questionOptions = opts
+	// Проверяем вопрос от AI
+	if question, options := parseQuestionBlock(cleanText); question != "" {
+		m.question = question
+		m.questionOptions = options
 		m.questionCursor = 0
 		m.currentState = stateQuestion
-		// Очищаем ввод для своего варианта
-		m.input.Reset()
-		m.input.Placeholder = "Свой вариант ответа..."
+		m.refreshViewport()
+		m.scrollToBottom = true
+		return m, nil
 	}
 
+	m.currentState = stateChat
 	m.refreshViewport()
 	m.scrollToBottom = true
+	return m, nil
+}
 
-	// Сохраняем сессию асинхронно
-	return m, func() tea.Msg {
-		time.Sleep(100 * time.Millisecond)
-		return saveSessionMsg{}
+// replaceThinkForSession формирует текст для сохранения в сессию:
+// оборачивает think-блок в специальный маркер, остальное — чистый текст
+func replaceThinkForSession(rawText, cleanText string) string {
+	// Если нет think-блоков — просто чистый текст
+	if !strings.Contains(rawText, "<think>") {
+		return cleanText
 	}
+	// Извлекаем think-контент
+	think := extractThinkContent(rawText)
+	if think == "" {
+		return cleanText
+	}
+	// Формат: <!--think:CONTENT-->\ncleanText
+	return "<!--think:" + think + "-->\n" + cleanText
+}
+
+// extractThinkContent извлекает содержимое первого <think>...</think> блока
+func extractThinkContent(text string) string {
+	start := strings.Index(text, "<think>")
+	if start == -1 {
+		return ""
+	}
+	inner := text[start+len("<think>"):]
+	end := strings.Index(inner, "</think>")
+	if end == -1 {
+		return strings.TrimSpace(inner)
+	}
+	return strings.TrimSpace(inner[:end])
 }
 
 // handleToolDone обрабатывает результат выполнения инструмента
@@ -1029,7 +1093,7 @@ func (m Model) renderMessages() string {
 	var sb strings.Builder
 	contentWidth := m.width - 4
 
-	for _, msg := range m.sess.Messages {
+	for msgIdx, msg := range m.sess.Messages {
 		switch msg.Role {
 		case session.RoleUser:
 			sb.WriteString(userLabelStyle.Render("▶ Ты") + "\n")
@@ -1038,7 +1102,9 @@ func (m Model) renderMessages() string {
 
 		case session.RoleAssistant:
 			sb.WriteString(assistantLabelStyle.Render("◆ TermCode") + "\n")
-			rendered := renderMarkdown(msg.Content, contentWidth)
+
+			// Рендерим с поддержкой think-блоков
+			rendered := m.renderAssistantContent(msgIdx, msg.Content, contentWidth)
 			sb.WriteString(assistantBubbleStyle.Width(contentWidth).Render(rendered))
 
 			// Tool calls этого сообщения
@@ -1056,10 +1122,28 @@ func (m Model) renderMessages() string {
 	// Текущий стриминг
 	if m.streaming != "" {
 		sb.WriteString(assistantLabelStyle.Render("◆ TermCode") + "\n")
-		rendered := renderMarkdown(m.streaming, contentWidth)
-		sb.WriteString(assistantBubbleStyle.Width(contentWidth).Render(rendered))
-		sb.WriteString(" ▋") // курсор
-		sb.WriteString("\n")
+
+		// Определяем — идёт ли сейчас think-фаза
+		streamText := m.streaming
+		inThink := isInsideThink(streamText)
+		visible := filterThinkTags(streamText)
+
+		if inThink {
+			// Показываем индикатор что модель "думает"
+			thinkIndicator := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#5C6370")).Italic(true).
+				Render("🧠 Думает...")
+			if visible != "" {
+				rendered := renderMarkdown(visible, contentWidth)
+				sb.WriteString(assistantBubbleStyle.Width(contentWidth).Render(thinkIndicator + "\n\n" + rendered))
+			} else {
+				sb.WriteString(assistantBubbleStyle.Width(contentWidth).Render(thinkIndicator))
+			}
+		} else {
+			rendered := renderMarkdown(visible, contentWidth)
+			sb.WriteString(assistantBubbleStyle.Width(contentWidth).Render(rendered))
+		}
+		sb.WriteString(" ▋\n")
 	}
 
 	return sb.String()
@@ -1791,6 +1875,7 @@ func (m Model) loadSession(s *session.Session) (tea.Model, tea.Cmd) {
 	m.streaming = ""
 	m.errMsg = ""
 	m.contextUsed = 0
+	m.thinkExpanded = make(map[int]bool)
 
 	m.refreshViewport()
 	m.scrollToBottom = true
@@ -1876,4 +1961,87 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen-2]) + ".."
+}
+
+// ── Think-блоки ───────────────────────────────────────────────────────────────
+
+// isInsideThink возвращает true если текст заканчивается внутри <think> блока
+func isInsideThink(text string) bool {
+	openCount := strings.Count(text, "<think>")
+	closeCount := strings.Count(text, "</think>")
+	return openCount > closeCount
+}
+
+// renderAssistantContent рендерит сообщение ассистента с поддержкой think-блоков
+func (m Model) renderAssistantContent(msgIdx int, content string, width int) string {
+	// Проверяем наш формат <!--think:CONTENT-->\nVISIBLE
+	const thinkPrefix = "<!--think:"
+	const thinkSuffix = "-->"
+
+	if !strings.HasPrefix(content, thinkPrefix) {
+		// Нет think-блока — обычный рендер
+		return renderMarkdown(content, width)
+	}
+
+	// Парсим think и visible части
+	rest := content[len(thinkPrefix):]
+	endIdx := strings.Index(rest, thinkSuffix)
+	if endIdx < 0 {
+		return renderMarkdown(content, width)
+	}
+	thinkContent := rest[:endIdx]
+	visible := strings.TrimPrefix(rest[endIdx+len(thinkSuffix):], "\n")
+
+	// Стиль заголовка think-блока
+	expanded := m.thinkExpanded[msgIdx]
+	var thinkHeader string
+	if expanded {
+		thinkHeader = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5C6370")).Italic(true).
+			Render("🧠 Мысли [T — скрыть]")
+	} else {
+		thinkHeader = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5C6370")).Italic(true).
+			Render("🧠 Мысли [T — показать]")
+	}
+
+	var sb strings.Builder
+	sb.WriteString(thinkHeader + "\n")
+
+	if expanded && thinkContent != "" {
+		// Показываем think-контент в затемнённом стиле
+		thinkStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#636D83")).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(lipgloss.Color("#3E4451")).
+			PaddingLeft(1)
+		// Обрезаем если очень длинный
+		display := thinkContent
+		if len(display) > 2000 {
+			display = display[:1997] + "..."
+		}
+		sb.WriteString(thinkStyle.Width(width-4).Render(display))
+		sb.WriteString("\n")
+	}
+
+	if visible != "" {
+		sb.WriteString("\n")
+		sb.WriteString(renderMarkdown(visible, width))
+	}
+
+	return sb.String()
+}
+
+// toggleLastThink переключает видимость think-блока последнего сообщения ассистента
+func (m Model) toggleLastThink() Model {
+	// Ищем последнее сообщение ассистента с think-блоком
+	for i := len(m.sess.Messages) - 1; i >= 0; i-- {
+		msg := m.sess.Messages[i]
+		if msg.Role == session.RoleAssistant && strings.HasPrefix(msg.Content, "<!--think:") {
+			m.thinkExpanded[i] = !m.thinkExpanded[i]
+			m.refreshViewport()
+			return m
+		}
+	}
+	return m
 }

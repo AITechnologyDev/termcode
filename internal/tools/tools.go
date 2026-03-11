@@ -2,11 +2,13 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Result — результат выполнения инструмента
@@ -40,16 +42,19 @@ func New(workDir string) *Executor {
 // resolvePath делает путь абсолютным относительно WorkDir
 // и проверяет что он не вылезает за пределы WorkDir (path traversal защита)
 func (e *Executor) resolvePath(p string) (string, error) {
+	// Нормализуем WorkDir с trailing slash чтобы избежать
+	// /workdir2 матча при проверке HasPrefix("/workdir")
+	safeRoot := filepath.Clean(e.WorkDir) + string(filepath.Separator)
+
 	if filepath.IsAbs(p) {
-		// Абсолютный путь — разрешаем только если внутри WorkDir
-		clean := filepath.Clean(p)
-		if !strings.HasPrefix(clean, e.WorkDir) {
+		clean := filepath.Clean(p) + string(filepath.Separator)
+		if !strings.HasPrefix(clean, safeRoot) {
 			return "", fmt.Errorf("путь за пределами рабочей директории: %s", p)
 		}
-		return clean, nil
+		return filepath.Clean(p), nil
 	}
 	full := filepath.Clean(filepath.Join(e.WorkDir, p))
-	if !strings.HasPrefix(full, e.WorkDir) {
+	if !strings.HasPrefix(full+string(filepath.Separator), safeRoot) {
 		return "", fmt.Errorf("путь за пределами рабочей директории: %s", p)
 	}
 	return full, nil
@@ -251,7 +256,10 @@ func (e *Executor) RunCommand(command string) Result {
 		}
 	}
 
-	cmd := exec.Command("sh", "-c", command)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = e.WorkDir
 
 	var stdout, stderr bytes.Buffer
@@ -274,6 +282,9 @@ func (e *Executor) RunCommand(command string) Result {
 	}
 
 	output := sb.String()
+	if ctx.Err() == context.DeadlineExceeded {
+		output += "\n[таймаут: команда выполнялась более 30 секунд]"
+	}
 	// Ограничение вывода
 	const maxOut = 8000
 	if len(output) > maxOut {

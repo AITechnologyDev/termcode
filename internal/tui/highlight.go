@@ -392,7 +392,7 @@ func colorizeWords(segment string, kwSet, biSet, tySet map[string]bool) string {
 	}
 	result := reIdent.ReplaceAllStringFunc(segment, func(word string) string {
 		switch {
-		case kwSet[word]:
+		case kwSet[word] || kwSet[strings.ToUpper(word)]:
 			return hlKeyword.Render(word)
 		case tySet[word]:
 			return hlType.Render(word)

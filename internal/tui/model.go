@@ -681,9 +681,10 @@ func countTokens(text string) int {
 	return int(float64(words)*1.3 + 0.5)
 }
 
-// filterThinkTags убирает <think>...</think> блоки из текста (для reasoning моделей)
+// filterThinkTags убирает <think>...</think> блоки и одиночные теги из текста
 func filterThinkTags(text string) string {
 	result := text
+	// Убираем полные блоки <think>...</think>
 	for {
 		start := strings.Index(result, "<think>")
 		if start == -1 {
@@ -697,6 +698,9 @@ func filterThinkTags(text string) string {
 		}
 		result = result[:start] + result[end+len("</think>"):]
 	}
+	// Убираем одиночные сиротские теги (GLM шлёт </think> без открывающего)
+	result = strings.ReplaceAll(result, "</think>", "")
+	result = strings.ReplaceAll(result, "<think>", "")
 	return strings.TrimSpace(result)
 }
 
@@ -777,7 +781,11 @@ func extractThinkContent(text string) string {
 	if end == -1 {
 		return strings.TrimSpace(inner)
 	}
-	return strings.TrimSpace(inner[:end])
+	content := strings.TrimSpace(inner[:end])
+	// Убираем вложенные теги если есть
+	content = strings.ReplaceAll(content, "</think>", "")
+	content = strings.ReplaceAll(content, "<think>", "")
+	return content
 }
 
 // handleToolDone обрабатывает результат выполнения инструмента

@@ -489,26 +489,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyCtrlC:
 				_ = m.sess.Save()
 				return m, tea.Quit
+
 			case tea.KeyUp:
 				if m.questionCursor > 0 {
 					m.questionCursor--
 				}
 				return m, nil
+
 			case tea.KeyDown:
-				// +1 за поле своего ввода в конце
 				maxCursor := len(m.questionOptions)
 				if m.questionCursor < maxCursor {
 					m.questionCursor++
 				}
 				return m, nil
-			case tea.KeyRunes:
-				if string(msg.Runes) == " " && m.questionCursor < len(m.questionOptions) {
-					// Space — переключить выбор текущего варианта
+
+			case tea.KeySpace:
+				// tea.KeySpace — пробел как отдельная клавиша
+				if m.questionCursor < len(m.questionOptions) {
 					m.questionSelected[m.questionCursor] = !m.questionSelected[m.questionCursor]
 					return m, nil
 				}
+				// Курсор на поле ввода — пропускаем в textarea
+				var inputCmd tea.Cmd
+				m.input, inputCmd = m.input.Update(msg)
+				return m, inputCmd
+
+			case tea.KeyRunes:
+				// Пробел через KeyRunes (некоторые терминалы)
+				if len(msg.Runes) == 1 && msg.Runes[0] == ' ' && m.questionCursor < len(m.questionOptions) {
+					m.questionSelected[m.questionCursor] = !m.questionSelected[m.questionCursor]
+					return m, nil
+				}
+				// Любой другой символ — только если курсор на поле ввода
+				if m.questionCursor == len(m.questionOptions) {
+					var inputCmd tea.Cmd
+					m.input, inputCmd = m.input.Update(msg)
+					return m, inputCmd
+				}
+				return m, nil
+
 			case tea.KeyEnter:
 				return m.submitQuestionAnswer()
+
 			case tea.KeyEsc:
 				m.currentState = stateChat
 				m.question = ""
@@ -516,11 +538,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.questionSelected = make(map[int]bool)
 				m = m.resize()
 				return m, nil
+
+			default:
+				// Все остальные клавиши (Backspace, стрелки и т.д.)
+				// передаём в textarea только если курсор на поле ввода
+				if m.questionCursor == len(m.questionOptions) {
+					var inputCmd tea.Cmd
+					m.input, inputCmd = m.input.Update(msg)
+					return m, inputCmd
+				}
+				return m, nil
 			}
-			// Текстовый ввод — обновляем textarea (свой ответ)
-			var inputCmd tea.Cmd
-			m.input, inputCmd = m.input.Update(msg)
-			return m, inputCmd
 		}
 
 		// ── Клавиши в чате (только если stateChat) ───────────────────────────

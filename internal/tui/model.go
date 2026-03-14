@@ -683,8 +683,20 @@ func (m *Model) streamAI() tea.Cmd {
 		if msg.Role == session.RoleSystem {
 			continue
 		}
+		role := string(msg.Role)
+		// Ollama и локальные модели не поддерживают роль "tool"
+		// Конвертируем tool results в user сообщения
+		if msg.Role == session.RoleTool {
+			role = "user"
+		}
+		// Объединяем подряд идущие user сообщения — некоторые модели
+		// не принимают два user сообщения подряд без assistant между ними
+		if role == "user" && len(rawMsgs) > 0 && rawMsgs[len(rawMsgs)-1].Role == "user" {
+			rawMsgs[len(rawMsgs)-1].Content += "\n" + msg.Content
+			continue
+		}
 		rawMsgs = append(rawMsgs, ai.Message{
-			Role:    string(msg.Role),
+			Role:    role,
 			Content: msg.Content,
 		})
 	}

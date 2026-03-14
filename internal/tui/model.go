@@ -217,10 +217,12 @@ type Model struct {
 	contextLimit int // лимит контекста модели
 
 	// ── Интерактивный вопрос от AI ────────────────────────────────────────
-	question         string
-	questionOptions  []string
-	questionCursor   int
-	questionSelected map[int]bool // мульти-выбор: индекс → выбран ли
+	question          string
+	questionOptions   []string
+	questionCursor    int
+	questionSelected  map[int]bool // мульти-выбор: индекс → выбран ли
+	questionMulti     bool         // разрешить множественный выбор
+	questionToolCall  bool         // вопрос пришёл через ask_user tool (ответ → AI)
 
 	// ── Палитра команд (Ctrl+P) ───────────────────────────────────────────
 	paletteCursor  int
@@ -512,6 +514,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.question = ""
 				m.questionOptions = nil
 				m.questionSelected = make(map[int]bool)
+				m = m.resize()
 				return m, nil
 			}
 			// Текстовый ввод — обновляем textarea (свой ответ)
@@ -860,7 +863,10 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 		m.question = question
 		m.questionOptions = options
 		m.questionCursor = 0
+		m.questionSelected = make(map[int]bool)
 		m.currentState = stateQuestion
+		m.input.Reset()
+		m = m.resize() // пересчитать высоту viewport под Q&A панель
 		m.refreshViewport()
 		m.scrollToBottom = true
 		return m, nil
@@ -908,6 +914,29 @@ func extractThinkContent(text string) string {
 
 // handleToolDone обрабатывает результат выполнения инструмента
 func (m Model) handleToolDone(msg toolDoneMsg) (tea.Model, tea.Cmd) {
+	// ── Специальный случай: ask_user — показываем Q&A панель ─────────────
+	if msg.call.Tool == "ask_user" && msg.result.Output == "__ask_user__" {
+		extra := msg.result.Extra
+		question, _ := extra["question"].(string)
+		optionsRaw, _ := extra["options"].([]string)
+		multi, _ := extra["multi"].(bool)
+
+		if question != "" {
+			m.question = question
+			m.questionOptions = optionsRaw
+			m.questionCursor = 0
+			m.questionSelected = make(map[int]bool)
+			m.questionMulti = multi
+			m.questionToolCall = true // флаг: ответ пойдёт обратно в AI
+			m.currentState = stateQuestion
+			m.input.Reset()
+			m = m.resize()
+			m.refreshViewport()
+			m.scrollToBottom = true
+			return m, nil
+		}
+	}
+
 	// Записываем tool call + результат в сессию
 	tc := session.ToolCall{
 		Name:   msg.call.Tool,
@@ -1199,10 +1228,19 @@ func (m Model) renderHints() string {
 // resize пересчитывает размеры компонентов
 func (m Model) resize() Model {
 	headerH := 1
-	inputH := 5
 	statusH := 1
-	hintsH := 1
+	hintsH  := 1
 	dividerH := 1
+
+	// Высота зоны ввода зависит от режима
+	inputH := 5
+	if m.currentState == stateQuestion && len(m.questionOptions) > 0 {
+		// Заголовок + хинт + варианты + поле ввода + отступы
+		inputH = 3 + len(m.questionOptions) + 3
+		if inputH > m.height/2 {
+			inputH = m.height / 2
+		}
+	}
 
 	vpHeight := m.height - headerH - inputH - statusH - hintsH - dividerH
 	if vpHeight < 3 {
@@ -1211,7 +1249,7 @@ func (m Model) resize() Model {
 
 	m.viewport.Width = m.width
 	m.viewport.Height = vpHeight
-	m.input.SetWidth(m.width - 4) // -4 для padding + prompt
+	m.input.SetWidth(m.width - 4)
 	m.refreshViewport()
 	return m
 }
@@ -1805,19 +1843,30 @@ func (m Model) submitQuestionAnswer() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Сбрасываем состояние Q&A
+	wasToolCall := m.questionToolCall
 	m.question = ""
 	m.questionOptions = nil
 	m.questionCursor = 0
 	m.questionSelected = make(map[int]bool)
+	m.questionMulti = false
+	m.questionToolCall = false
 	m.input.Reset()
-	m.input.Placeholder = "Ask anything... (Enter to send, Shift+Enter for newline)"
 	m.currentState = stateThinking
+	m = m.resize()
 	m.streaming = ""
 	m.genStartTime = time.Now()
 	m.genTokens = 0
 	m.genSpeed = 0
 
-	m.sess.AddMessage(session.RoleUser, answer)
+	if wasToolCall {
+		// Ответ на ask_user — добавляем как tool result и продолжаем стрим AI
+		m.sess.AddMessage(session.RoleTool, fmt.Sprintf("[tool:ask_user]\n%s", answer))
+	} else {
+		// Обычный Q&A — добавляем как сообщение пользователя
+		m.sess.AddMessage(session.RoleUser, answer)
+	}
+
 	m.refreshViewport()
 	m.scrollToBottom = true
 
@@ -1833,9 +1882,14 @@ func (m Model) renderQuestionPanel() string {
 	questionText := lipgloss.NewStyle().
 		Foreground(colorPrimary).Bold(true).
 		Render("❓ " + m.question)
+
+	hintText := m.tr().QAHint
+	if m.questionMulti {
+		hintText += "  [multi-select]"
+	}
 	hint := lipgloss.NewStyle().
 		Foreground(colorMuted).Italic(true).
-		Render(m.tr().QAHint)
+		Render(hintText)
 	sb.WriteString(questionText + "\n")
 	sb.WriteString(hint + "\n\n")
 

@@ -20,6 +20,8 @@ type Result struct {
 	Output string
 	Error  string
 	OK     bool
+	// Extra — дополнительные данные для специальных инструментов (например ask_user)
+	Extra  map[string]any
 }
 
 func ok(output string) Result {
@@ -364,6 +366,38 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 			return fail("fetch_page: нужен параметр 'url'")
 		}
 		return FetchPage(url)
+
+	case "ask_user":
+		question, ok := params["question"]
+		if !ok || question == "" {
+			return fail("ask_user: нужен параметр 'question'")
+		}
+		// Варианты передаются как "options" — JSON массив строк
+		// Формат: {"question": "...", "options": "[\"A\", \"B\", \"C\"]", "multi": "true"}
+		optionsRaw := params["options"]
+		multi := params["multi"] == "true"
+		var options []string
+		if optionsRaw != "" {
+			// Пробуем JSON массив
+			if err := json.Unmarshal([]byte(optionsRaw), &options); err != nil {
+				// Fallback: разделитель "|"
+				for _, o := range strings.Split(optionsRaw, "|") {
+					o = strings.TrimSpace(o)
+					if o != "" {
+						options = append(options, o)
+					}
+				}
+			}
+		}
+		return Result{
+			OK:     true,
+			Output: "__ask_user__", // специальный маркер для TUI
+			Extra: map[string]any{
+				"question": question,
+				"options":  options,
+				"multi":    multi,
+			},
+		}
 
 	default:
 		return fail(fmt.Sprintf("неизвестный инструмент: %s", name))
@@ -857,6 +891,24 @@ Params: url (full URL to fetch)
 Example:
 ` + "```" + `tool
 {"tool": "fetch_page", "params": {"url": "https://github.com/Anuken/Mindustry/wiki/Modding"}}
+` + "```" + `
+
+### ask_user
+Show the user an interactive question with selectable options. Use this INSTEAD of writing
+a question in plain text whenever you need the user to choose between options.
+The user can select one or multiple options, or type a custom answer.
+Params:
+  question - the question text (required)
+  options  - JSON array of option strings, e.g. ["Option A", "Option B", "Option C"]
+             OR pipe-separated: "Option A|Option B|Option C"
+  multi    - "true" to allow selecting multiple options (default: single select)
+IMPORTANT: Always prefer ask_user over plain-text questions when you have defined options.
+Examples:
+` + "```" + `tool
+{"tool": "ask_user", "params": {"question": "Which component should I add first?", "options": "[\"Authentication\", \"Database\", \"REST API\", \"WebSocket\"]"}}
+` + "```" + `
+` + "```" + `tool
+{"tool": "ask_user", "params": {"question": "Select features to implement", "options": "Logging|Error handling|Unit tests|CI/CD", "multi": "true"}}
 ` + "```" + `
 `
 }

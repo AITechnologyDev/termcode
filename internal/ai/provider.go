@@ -60,6 +60,63 @@ type OllamaProvider struct {
 func (p *OllamaProvider) Name() string  { return "ollama" }
 func (p *OllamaProvider) Model() string { return p.cfg.Model }
 
+// ollamaShowResponse — ответ /api/show
+type ollamaShowResponse struct {
+	ModelInfo map[string]any `json:"model_info"`
+	Details   struct {
+		ParameterSize string `json:"parameter_size"`
+		Family        string `json:"family"`
+	} `json:"details"`
+}
+
+// FetchOllamaModelContext запрашивает реальный context_length модели через /api/show
+// Возвращает (contextLength, maxTokens, error)
+// contextLength = 0 если не удалось определить
+func FetchOllamaModelContext(baseURL, modelName string) (contextLength int, err error) {
+	type showReq struct {
+		Name string `json:"name"`
+	}
+	body, _ := json.Marshal(showReq{Name: modelName})
+
+	url := strings.TrimRight(baseURL, "/") + "/api/show"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("ollama /api/show: HTTP %d", resp.StatusCode)
+	}
+
+	var show ollamaShowResponse
+	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
+		return 0, err
+	}
+
+	// Ищем context_length в model_info — ключ может быть разным у разных архитектур
+	// например: "qwen3next.context_length", "llama.context_length", "qwen2.context_length"
+	for key, val := range show.ModelInfo {
+		if strings.HasSuffix(key, ".context_length") || key == "context_length" {
+			switch v := val.(type) {
+			case float64:
+				return int(v), nil
+			case int:
+				return v, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("context_length не найден в model_info")
+}
+
 type ollamaRequest struct {
 	Model    string             `json:"model"`
 	Messages []ollamaMessage    `json:"messages"`

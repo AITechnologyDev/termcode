@@ -136,9 +136,10 @@ type Model struct {
 	contextLimit int // лимит контекста модели
 
 	// ── Интерактивный вопрос от AI ────────────────────────────────────────
-	question        string
-	questionOptions []string
-	questionCursor  int
+	question         string
+	questionOptions  []string
+	questionCursor   int
+	questionSelected map[int]bool // мульти-выбор: индекс → выбран ли
 
 	// ── Палитра команд (Ctrl+P) ───────────────────────────────────────────
 	paletteCursor  int
@@ -211,6 +212,7 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 	}
 	m.paletteItems = buildPaletteItems()
 	m.thinkExpanded = make(map[int]bool)
+	m.questionSelected = make(map[int]bool)
 	return m, nil
 }
 
@@ -410,17 +412,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case tea.KeyDown:
-				if len(m.questionOptions) > 0 && m.questionCursor < len(m.questionOptions)-1 {
+				// +1 за поле своего ввода в конце
+				maxCursor := len(m.questionOptions)
+				if m.questionCursor < maxCursor {
 					m.questionCursor++
 				}
 				return m, nil
+			case tea.KeyRunes:
+				if string(msg.Runes) == " " && m.questionCursor < len(m.questionOptions) {
+					// Space — переключить выбор текущего варианта
+					m.questionSelected[m.questionCursor] = !m.questionSelected[m.questionCursor]
+					return m, nil
+				}
 			case tea.KeyEnter:
 				return m.submitQuestionAnswer()
 			case tea.KeyEsc:
-				// Esc — отменить вопрос, вернуться в чат
 				m.currentState = stateChat
 				m.question = ""
 				m.questionOptions = nil
+				m.questionSelected = make(map[int]bool)
 				return m, nil
 			}
 			// Текстовый ввод — обновляем textarea (свой ответ)
@@ -541,6 +551,20 @@ func (m *Model) streamAI() tea.Cmd {
 	maxTokens := pc.GetMaxTokens()
 	contextLength := pc.GetContextLength()
 
+	// Для Ollama — пробуем получить реальный контекст через /api/show
+	// Если кешировано в ProviderConfig.ContextLength — используем кеш
+	if m.cfg.ActiveProvider == config.ProviderOllama && pc.ContextLength == 0 {
+		if detected, err := ai.FetchOllamaModelContext(pc.BaseURL, pc.Model); err == nil && detected > 0 {
+			// Кешируем в конфиге чтобы не делать запрос каждый раз
+			providersCopy := m.cfg.Providers
+			pc.ContextLength = detected
+			providersCopy[m.cfg.ActiveProvider] = pc
+			m.cfg.Providers = providersCopy
+			_ = m.cfg.Save()
+			contextLength = detected
+		}
+	}
+
 	// Строим сообщения для API
 	rawMsgs := make([]ai.Message, 0, len(m.sess.Messages))
 	for _, msg := range m.sess.Messages {
@@ -553,8 +577,19 @@ func (m *Model) streamAI() tea.Cmd {
 		})
 	}
 
+	lang := m.cfg.Language
+	if lang == "" {
+		lang = "en"
+	}
+	var langInstruction string
+	if lang == "ru" {
+		langInstruction = "\n\nIMPORTANT: Always respond in Russian language."
+	} else {
+		langInstruction = "\n\nIMPORTANT: Always respond in English language."
+	}
+
 	systemPrompt := m.cfg.SystemPrompt + "\n\n" + tools.ToolDefs() +
-		"\n\nWorking directory: " + m.workDir
+		"\n\nWorking directory: " + m.workDir + langInstruction
 
 	apiMsgs, dropped := ai.TrimMessages(rawMsgs, systemPrompt, contextLength-maxTokens)
 	if dropped > 0 {
@@ -720,9 +755,11 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 	visibleText := filterThinkTags(fullText)
 	calls, cleanText := ai.ParseToolCalls(visibleText)
 
-	// Сохраняем в сессию с тегами (для истории и replay)
+	// Сохраняем в сессию — но только если есть что сохранять
 	rawForSession := replaceThinkForSession(fullText, cleanText)
-	m.sess.AddMessage(session.RoleAssistant, rawForSession)
+	if strings.TrimSpace(cleanText) != "" || extractThinkContent(fullText) != "" {
+		m.sess.AddMessage(session.RoleAssistant, rawForSession)
+	}
 
 	if len(calls) > 0 {
 		call := calls[0]
@@ -948,6 +985,13 @@ func (m Model) renderPullScreen() string {
 func (m Model) renderHeader() string {
 	title := headerStyle.Render(" TermCode ")
 
+	// Язык интерфейса
+	lang := m.cfg.Language
+	if lang == "" {
+		lang = "en"
+	}
+	langLabel := headerInfoStyle.Render(" " + strings.ToUpper(lang) + " ")
+
 	providerInfo := fmt.Sprintf(" %s / %s ", m.provider.Name(), m.provider.Model())
 	info := headerInfoStyle.Render(providerInfo)
 
@@ -957,14 +1001,14 @@ func (m Model) renderHeader() string {
 	}
 	dirInfo := headerInfoStyle.Render(" 📁 " + workDirShort + " ")
 
-	// Заполняем пространство между элементами
-	gap := m.width - lipgloss.Width(title) - lipgloss.Width(info) - lipgloss.Width(dirInfo)
+	gap := m.width - lipgloss.Width(title) - lipgloss.Width(langLabel) -
+		lipgloss.Width(info) - lipgloss.Width(dirInfo)
 	if gap < 0 {
 		gap = 0
 	}
 	spacer := strings.Repeat(" ", gap)
 
-	return title + spacer + info + dirInfo
+	return title + langLabel + spacer + info + dirInfo
 }
 
 // renderInput отрисовывает область ввода
@@ -1050,13 +1094,17 @@ func formatTok(n int) string {
 
 // renderHints отрисовывает подсказки клавиш
 func (m Model) renderHints() string {
+	lang := m.cfg.Language
+	if lang == "" {
+		lang = "en"
+	}
 	hints := []string{
-		keyStyle.Render("Enter") + keyHintStyle.Render(" отправить"),
-		keyStyle.Render("Shift+Enter") + keyHintStyle.Render(" перенос"),
-		keyStyle.Render("Ctrl+P") + keyHintStyle.Render(" команды"),
-		keyStyle.Render("/models") + keyHintStyle.Render(" модели"),
-		keyStyle.Render("Ctrl+S") + keyHintStyle.Render(" сохранить"),
-		keyStyle.Render("Ctrl+C") + keyHintStyle.Render(" выйти"),
+		keyStyle.Render("Enter") + keyHintStyle.Render(" send"),
+		keyStyle.Render("Shift+Enter") + keyHintStyle.Render(" newline"),
+		keyStyle.Render("Ctrl+P") + keyHintStyle.Render(" commands"),
+		keyStyle.Render("/models") + keyHintStyle.Render(" models"),
+		keyStyle.Render("Ctrl+S") + keyHintStyle.Render(" save"),
+		keyStyle.Render("[" + strings.ToUpper(lang) + "]") + keyHintStyle.Render(" Ctrl+P→lang"),
 	}
 	return keyHintStyle.Render(strings.Join(hints, "  "))
 }
@@ -1326,13 +1374,13 @@ func fetchOllamaModels(cfg *config.Config) tea.Cmd {
 
 // selectModel применяет выбранную модель и переходит в чат
 func (m Model) selectModel(name string) (tea.Model, tea.Cmd) {
-	// Обновляем конфиг
 	pc := m.cfg.Providers[m.cfg.ActiveProvider]
 	pc.Model = name
+	// Сбрасываем кеш контекста — новая модель может иметь другой лимит
+	pc.ContextLength = 0
 	m.cfg.Providers[m.cfg.ActiveProvider] = pc
 	_ = m.cfg.Save()
 
-	// Пересоздаём провайдера с новой моделью
 	provider, err := ai.New(pc, m.cfg.ActiveProvider)
 	if err != nil {
 		m.errMsg = "Ошибка смены модели: " + err.Error()
@@ -1523,33 +1571,45 @@ func parseQuestionBlock(text string) (question string, options []string) {
 // submitQuestionAnswer отправляет выбранный ответ на вопрос AI
 func (m Model) submitQuestionAnswer() (tea.Model, tea.Cmd) {
 	var answer string
-
 	customText := strings.TrimSpace(m.input.Value())
 
 	if customText != "" {
 		// Пользователь написал свой вариант
 		answer = customText
-	} else if len(m.questionOptions) > 0 && m.questionCursor < len(m.questionOptions) {
-		// Выбран один из предложенных вариантов
+	} else if len(m.questionSelected) > 0 {
+		// Есть выбранные чекбоксом варианты — собираем все
+		var selected []string
+		for i, opt := range m.questionOptions {
+			if m.questionSelected[i] {
+				selected = append(selected, opt)
+			}
+		}
+		if len(selected) == 1 {
+			answer = selected[0]
+		} else if len(selected) > 1 {
+			answer = strings.Join(selected, ", ")
+		}
+	} else if m.questionCursor < len(m.questionOptions) {
+		// Курсор стоит на варианте — одиночный выбор Enter
 		answer = m.questionOptions[m.questionCursor]
-	} else {
-		// Ничего не выбрано и не написано
+	}
+
+	if answer == "" {
 		return m, nil
 	}
 
-	// Сбрасываем состояние вопроса
 	m.question = ""
 	m.questionOptions = nil
 	m.questionCursor = 0
+	m.questionSelected = make(map[int]bool)
 	m.input.Reset()
-	m.input.Placeholder = "Введи запрос... (Enter — отправить, Shift+Enter — перенос строки)"
+	m.input.Placeholder = "Ask anything... (Enter to send, Shift+Enter for newline)"
 	m.currentState = stateThinking
 	m.streaming = ""
 	m.genStartTime = time.Now()
 	m.genTokens = 0
 	m.genSpeed = 0
 
-	// Добавляем ответ как сообщение пользователя
 	m.sess.AddMessage(session.RoleUser, answer)
 	m.refreshViewport()
 	m.scrollToBottom = true
@@ -1562,34 +1622,93 @@ func (m Model) renderQuestionPanel() string {
 	var sb strings.Builder
 	w := m.width - 2
 
-	// Заголовок вопроса
-	questionHeader := toolCallStyle.Width(w).Render("❓ " + m.question)
-	sb.WriteString(questionHeader)
-	sb.WriteString("\n")
+	// ── Заголовок вопроса ─────────────────────────────────────────────────
+	questionText := lipgloss.NewStyle().
+		Foreground(colorPrimary).Bold(true).
+		Render("❓ " + m.question)
+	hint := lipgloss.NewStyle().
+		Foreground(colorMuted).Italic(true).
+		Render("  Space — выбрать  ↑↓ — навигация  Enter — отправить  Esc — отмена")
+	sb.WriteString(questionText + "\n")
+	sb.WriteString(hint + "\n\n")
 
-	// Варианты ответа
-	if len(m.questionOptions) > 0 {
-		for i, opt := range m.questionOptions {
-			var line string
-			if i == m.questionCursor {
-				line = userBubbleStyle.Render(fmt.Sprintf("  ▶ %d. %s", i+1, opt))
-			} else {
-				line = keyHintStyle.Render(fmt.Sprintf("    %d. %s", i+1, opt))
-			}
-			sb.WriteString(line + "\n")
+	// ── Кнопки-чекбоксы ──────────────────────────────────────────────────
+	for i, opt := range m.questionOptions {
+		isSelected := m.questionSelected[i]
+		isCursor := m.questionCursor == i
+
+		// Иконка чекбокса
+		var checkbox string
+		if isSelected {
+			checkbox = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Bold(true).Render("✓")
+		} else {
+			checkbox = lipgloss.NewStyle().Foreground(colorMuted).Render("○")
 		}
-		sb.WriteString("\n")
+
+		// Текст кнопки
+		label := fmt.Sprintf(" %s  %s", checkbox, opt)
+
+		var btn string
+		if isCursor && isSelected {
+			// Курсор + выбран: яркая зелёная кнопка
+			btn = lipgloss.NewStyle().
+				Background(lipgloss.Color("#2D4A2D")).
+				Foreground(lipgloss.Color("#98C379")).Bold(true).
+				Padding(0, 1).Width(w - 2).
+				Render("▶" + label)
+		} else if isCursor {
+			// Только курсор: подсвеченная кнопка
+			btn = lipgloss.NewStyle().
+				Background(lipgloss.Color("#2C313A")).
+				Foreground(colorText).Bold(true).
+				Padding(0, 1).Width(w - 2).
+				Render("▶" + label)
+		} else if isSelected {
+			// Только выбран: зелёная кнопка без курсора
+			btn = lipgloss.NewStyle().
+				Background(lipgloss.Color("#1E3A1E")).
+				Foreground(lipgloss.Color("#98C379")).
+				Padding(0, 1).Width(w - 2).
+				Render(" " + label)
+		} else {
+			// Обычная кнопка
+			btn = lipgloss.NewStyle().
+				Background(lipgloss.Color("#21252B")).
+				Foreground(colorText).
+				Padding(0, 1).Width(w - 2).
+				Render(" " + label)
+		}
+
+		sb.WriteString(btn + "\n")
 	}
 
-	// Строка своего ввода (последний "вариант" = курсор на конце списка)
-	var inputStyle lipgloss.Style
-	if m.questionCursor == len(m.questionOptions) || len(m.questionOptions) == 0 {
-		inputStyle = inputContainerFocusStyle
-	} else {
-		inputStyle = inputContainerStyle
-	}
+	// ── Поле своего ввода ────────────────────────────────────────────────
+	sb.WriteString("\n")
+	isInputFocused := m.questionCursor == len(m.questionOptions)
 	prompt := inputPromptStyle.Render("✏ ")
-	sb.WriteString(inputStyle.Width(w).Render(prompt + m.input.View()))
+
+	var inputBox string
+	if isInputFocused {
+		inputBox = inputContainerFocusStyle.Width(w).Render(prompt + m.input.View())
+	} else {
+		inputBox = inputContainerStyle.Width(w).Render(prompt + m.input.View())
+	}
+	sb.WriteString(inputBox)
+
+	// ── Статус выбора ─────────────────────────────────────────────────────
+	if len(m.questionSelected) > 0 {
+		count := 0
+		for _, v := range m.questionSelected {
+			if v {
+				count++
+			}
+		}
+		if count > 0 {
+			sb.WriteString("\n" + lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#98C379")).
+				Render(fmt.Sprintf("  ✓ Выбрано: %d", count)))
+		}
+	}
 
 	return sb.String()
 }
@@ -1641,6 +1760,21 @@ func buildPaletteItems() []paletteItem {
 				m.currentState = stateChat
 				m.paletteFilter = ""
 				m.refreshViewport()
+				return m, nil
+			},
+		},
+		{
+			key: "lang", title: "Сменить язык / Switch Language",
+			description: "EN ↔ RU — язык интерфейса и ответов AI",
+			action: func(m Model) (Model, tea.Cmd) {
+				m.paletteFilter = ""
+				m.currentState = stateChat
+				if m.cfg.Language == "ru" {
+					m.cfg.Language = "en"
+				} else {
+					m.cfg.Language = "ru"
+				}
+				_ = m.cfg.Save()
 				return m, nil
 			},
 		},

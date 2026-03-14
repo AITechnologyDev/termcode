@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =============================================================================
-# TermCode — сборка прямо в Termux (нативно, без кросс-компиляции)
-# Запускай этот скрипт на телефоне если хочешь собрать локально
+# TermCode — build directly in Termux (natively, without cross-compiling)
+# Run this script on your phone if you want to build locally
 # =============================================================================
 set -euo pipefail
 
@@ -22,37 +22,37 @@ INSTALL_DIR="${PREFIX}/bin"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo ""
-echo -e "${CYAN}  TermCode — сборка в Termux${NC}"
+echo -e "${CYAN}  TermCode — Build in Termux${NC}"
 echo ""
 
 # Проверяем Go
 if ! command -v go &>/dev/null; then
-    info "Устанавливаем Go..."
-    pkg install -y golang || err "Не удалось установить Go"
+    info "Installing Go..."
+    pkg install -y golang || err "Failed to install Go"
 fi
 log "Go: $(go version)"
 
 # Проверяем что рядом со скриптом есть исходники
 if [[ ! -f "${SCRIPT_DIR}/go.mod" ]]; then
-    err "go.mod не найден в ${SCRIPT_DIR}. Убедись что запускаешь скрипт из корня проекта TermCode."
+    err "go.mod not found in ${SCRIPT_DIR}. Make sure you run the script from the root of the TermCode project."
 fi
 if [[ ! -d "${SCRIPT_DIR}/internal" ]]; then
-    err "Папка internal/ не найдена. Убедись что все файлы проекта скопированы на телефон."
+    err "Папка internal/ not found. Make sure all project files are copied to your phone."
 fi
 
 # Копируем исходники в build dir (чтобы не загрязнять рабочую папку)
-info "Копируем исходники в ${BUILD_DIR}..."
+info "Copy the source code to ${BUILD_DIR}..."
 mkdir -p "$BUILD_DIR"
 cp -r "${SCRIPT_DIR}/." "$BUILD_DIR/"
 cd "$BUILD_DIR"
 
 # Генерируем go.sum и загружаем внешние зависимости
-info "Загружаем зависимости (go mod tidy)..."
+info "Loading dependencies (go mod tidy)..."
 # GOFLAGS=-mod=mod нужен чтобы tidy не ругался на workspace
-GOFLAGS=-mod=mod go mod tidy || err "go mod tidy не удался. Проверь интернет."
+GOFLAGS=-mod=mod go mod tidy || err "go mod tidy failed. Check the internet."
 
 # Собираем
-info "Собираем termcode..."
+info "We are collecting termcode..."
 VERSION="dev"
 COMMIT="local"
 
@@ -61,13 +61,13 @@ CGO_ENABLED=0 go build \
     -o "${INSTALL_DIR}/termcode" \
     ./cmd/termcode
 
-log "termcode установлен: ${INSTALL_DIR}/termcode"
+log "termcode installed: ${INSTALL_DIR}/termcode"
 echo ""
-echo -e "${CYAN}Запуск:${NC}"
-echo "  cd <твой-проект>"
+echo -e "${CYAN}Launch:${NC}"
+echo "  cd <your-project>"
 echo "  termcode"
 echo ""
-echo -e "${CYAN}Конфиг (провайдеры / ключи):${NC}"
+echo -e "${CYAN}Config (providers/keys):${NC}"
 echo "  termcode config init"
 echo "  termcode config show"
 echo "  termcode config set-provider ollama --model qwen2.5-coder:7b"

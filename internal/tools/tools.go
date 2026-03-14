@@ -3,7 +3,11 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -338,9 +342,444 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 		}
 		return e.RunCommand(cmd)
 
+	case "download_file":
+		url, ok := params["url"]
+		if !ok || url == "" {
+			return fail("download_file: нужен параметр 'url'")
+		}
+		dest := params["path"]
+		return e.DownloadFile(url, dest)
+
+	case "web_search":
+		query, ok := params["query"]
+		if !ok || query == "" {
+			return fail("web_search: нужен параметр 'query'")
+		}
+		maxResults := 5
+		return WebSearch(query, maxResults)
+
+	case "fetch_page":
+		url, ok := params["url"]
+		if !ok || url == "" {
+			return fail("fetch_page: нужен параметр 'url'")
+		}
+		return FetchPage(url)
+
 	default:
 		return fail(fmt.Sprintf("неизвестный инструмент: %s", name))
 	}
+}
+
+// DownloadFile скачивает файл по URL и сохраняет в рабочую директорию
+func (e *Executor) DownloadFile(rawURL, destPath string) Result {
+	// Базовая проверка URL
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return fail("download_file: поддерживаются только http/https URL")
+	}
+
+	// Если путь не указан — берём имя файла из URL
+	if destPath == "" {
+		parts := strings.Split(rawURL, "/")
+		destPath = parts[len(parts)-1]
+		if destPath == "" || strings.Contains(destPath, "?") {
+			destPath = "downloaded_file"
+		}
+		// Убираем query string
+		if idx := strings.Index(destPath, "?"); idx >= 0 {
+			destPath = destPath[:idx]
+		}
+	}
+
+	abs, err := e.resolvePath(destPath)
+	if err != nil {
+		return fail(err.Error())
+	}
+
+	if err := os.MkdirAll(filepath.Dir(abs), 0750); err != nil {
+		return fail(fmt.Sprintf("создание директории: %v", err))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fail(fmt.Sprintf("ошибка запроса: %v", err))
+	}
+	req.Header.Set("User-Agent", "TermCode/0.1")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fail(fmt.Sprintf("ошибка загрузки: %v", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fail(fmt.Sprintf("сервер вернул %d: %s", resp.StatusCode, rawURL))
+	}
+
+	// Ограничение 50 MB
+	const maxSize = 50 * 1024 * 1024
+	limited := io.LimitReader(resp.Body, maxSize+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return fail(fmt.Sprintf("ошибка чтения: %v", err))
+	}
+	if len(data) > maxSize {
+		return fail("файл превышает лимит 50 MB")
+	}
+
+	if err := os.WriteFile(abs, data, 0640); err != nil {
+		return fail(fmt.Sprintf("ошибка записи: %v", err))
+	}
+
+	return ok(fmt.Sprintf("скачано %d байт → %s", len(data), destPath))
+}
+
+// ── Веб-поиск ─────────────────────────────────────────────────────────────────
+
+// ddgResult — один результат поиска DuckDuckGo
+type ddgResult struct {
+	Title   string `json:"Text"`
+	URL     string `json:"FirstURL"`
+	// для RelatedTopics которые вложены
+	Topics []ddgResult `json:"Topics,omitempty"`
+}
+
+// ddgResponse — ответ DDG Instant Answer API
+type ddgResponse struct {
+	AbstractText   string       `json:"AbstractText"`
+	AbstractURL    string       `json:"AbstractURL"`
+	AbstractSource string       `json:"AbstractSource"`
+	RelatedTopics  []ddgResult  `json:"RelatedTopics"`
+	Results        []ddgResult  `json:"Results"`
+	Answer         string       `json:"Answer"`
+	AnswerType     string       `json:"AnswerType"`
+}
+
+// WebSearch выполняет поиск через DuckDuckGo Instant Answer API + HTML scrape fallback
+func WebSearch(query string, maxResults int) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Сначала пробуем DDG Instant Answer API (JSON, без ключа)
+	apiURL := "https://api.duckduckgo.com/?q=" + url.QueryEscape(query) +
+		"&format=json&no_html=1&skip_disambig=1"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return fail("web_search: " + err.Error())
+	}
+	req.Header.Set("User-Agent", "TermCode/0.1 (terminal AI assistant)")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fail("web_search: ошибка запроса: " + err.Error())
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return fail("web_search: ошибка чтения: " + err.Error())
+	}
+
+	var ddg ddgResponse
+	if err := json.Unmarshal(body, &ddg); err != nil {
+		return fail("web_search: ошибка парсинга: " + err.Error())
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🔍 Результаты поиска: %q\n\n", query))
+
+	count := 0
+
+	// 1. Прямой ответ (калькулятор, конвертер и т.д.)
+	if ddg.Answer != "" {
+		sb.WriteString(fmt.Sprintf("💡 Ответ: %s\n\n", ddg.Answer))
+		count++
+	}
+
+	// 2. Краткая выжимка (Wikipedia и т.д.)
+	if ddg.AbstractText != "" {
+		src := ddg.AbstractSource
+		if ddg.AbstractURL != "" {
+			src = fmt.Sprintf("%s (%s)", src, ddg.AbstractURL)
+		}
+		sb.WriteString(fmt.Sprintf("📖 %s\n   Источник: %s\n\n", ddg.AbstractText, src))
+		count++
+	}
+
+	// 3. Прямые результаты
+	for _, r := range ddg.Results {
+		if count >= maxResults {
+			break
+		}
+		if r.Title == "" || r.URL == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("• %s\n  %s\n\n", r.Title, r.URL))
+		count++
+	}
+
+	// 4. Связанные темы
+	for _, r := range ddg.RelatedTopics {
+		if count >= maxResults {
+			break
+		}
+		// Вложенные группы
+		if len(r.Topics) > 0 {
+			for _, t := range r.Topics {
+				if count >= maxResults {
+					break
+				}
+				if t.Title == "" || t.URL == "" {
+					continue
+				}
+				sb.WriteString(fmt.Sprintf("• %s\n  %s\n\n", t.Title, t.URL))
+				count++
+			}
+			continue
+		}
+		if r.Title == "" || r.URL == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("• %s\n  %s\n\n", r.Title, r.URL))
+		count++
+	}
+
+	if count == 0 {
+		// DDG API дал пустой ответ — fallback: HTML поиск через Lite версию
+		return webSearchLite(query, maxResults)
+	}
+
+	sb.WriteString(fmt.Sprintf("---\n%d результатов. Используй fetch_page для чтения страницы.", count))
+	return ok(sb.String())
+}
+
+// webSearchLite — fallback через DDG Lite (HTML scraping без JS)
+func webSearchLite(query string, maxResults int) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	liteURL := "https://lite.duckduckgo.com/lite/?q=" + url.QueryEscape(query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, liteURL, nil)
+	if err != nil {
+		return fail("web_search fallback: " + err.Error())
+	}
+	req.Header.Set("User-Agent", "TermCode/0.1")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fail("web_search fallback: " + err.Error())
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return fail("web_search fallback: " + err.Error())
+	}
+
+	// Простой парсинг HTML — ищем ссылки результатов
+	html := string(body)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🔍 Результаты поиска: %q\n\n", query))
+
+	count := 0
+	// DDG lite результаты имеют паттерн: href="//duckduckgo.com/l/?uddg=URL"
+	// или просто прямые ссылки в <a class="result-link">
+	lines := strings.Split(html, "\n")
+	for _, line := range lines {
+		if count >= maxResults {
+			break
+		}
+		line = strings.TrimSpace(line)
+		// Ищем строки с uddg= (encoded result URLs)
+		if strings.Contains(line, "uddg=") {
+			start := strings.Index(line, "uddg=")
+			if start < 0 {
+				continue
+			}
+			rawURL := line[start+5:]
+			// Декодируем до следующего &amp; или "
+			end := strings.IndexAny(rawURL, "\"&>")
+			if end > 0 {
+				rawURL = rawURL[:end]
+			}
+			decoded, err2 := url.QueryUnescape(rawURL)
+			if err2 != nil || decoded == "" {
+				continue
+			}
+			if !strings.HasPrefix(decoded, "http") {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("• %s\n\n", decoded))
+			count++
+		}
+	}
+
+	if count == 0 {
+		return fail(fmt.Sprintf(
+			"web_search: DDG не вернул результатов для %q. Попробуй другой запрос.", query))
+	}
+
+	sb.WriteString(fmt.Sprintf("---\n%d результатов. Используй fetch_page для чтения.", count))
+	return ok(sb.String())
+}
+
+// FetchPage скачивает страницу и извлекает читаемый текст (без HTML тегов)
+func FetchPage(rawURL string) Result {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return fail("fetch_page: поддерживаются только http/https")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fail("fetch_page: " + err.Error())
+	}
+	req.Header.Set("User-Agent", "TermCode/0.1 (terminal AI assistant)")
+	req.Header.Set("Accept", "text/html,text/plain;q=0.9")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fail("fetch_page: ошибка запроса: " + err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fail(fmt.Sprintf("fetch_page: сервер вернул %d", resp.StatusCode))
+	}
+
+	// Ограничиваем 512KB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return fail("fetch_page: ошибка чтения: " + err.Error())
+	}
+
+	// Убираем HTML теги — простой стриппер без зависимостей
+	text := stripHTML(string(body))
+
+	// Ограничиваем вывод до 8000 символов
+	const maxOut = 8000
+	if len(text) > maxOut {
+		text = text[:maxOut] + "\n\n... [страница обрезана, первые 8000 символов]"
+	}
+
+	if strings.TrimSpace(text) == "" {
+		return fail("fetch_page: страница пуста или не содержит текста")
+	}
+
+	return ok(fmt.Sprintf("📄 %s\n\n%s", rawURL, text))
+}
+
+// stripHTML убирает HTML теги и нормализует пробелы
+func stripHTML(html string) string {
+	var sb strings.Builder
+	inTag := false
+	inScript := false
+	inStyle := false
+
+	lower := strings.ToLower(html)
+	i := 0
+	for i < len(html) {
+		// Пропускаем <script>...</script>
+		if !inTag && i+7 <= len(lower) && lower[i:i+7] == "<script" {
+			end := strings.Index(lower[i:], "</script>")
+			if end >= 0 {
+				i += end + 9
+				inScript = false
+				continue
+			}
+			inScript = true
+		}
+		if inScript {
+			i++
+			continue
+		}
+		// Пропускаем <style>...</style>
+		if !inTag && i+6 <= len(lower) && lower[i:i+6] == "<style" {
+			end := strings.Index(lower[i:], "</style>")
+			if end >= 0 {
+				i += end + 8
+				inStyle = false
+				continue
+			}
+			inStyle = true
+		}
+		if inStyle {
+			i++
+			continue
+		}
+
+		c := html[i]
+		if c == '<' {
+			inTag = true
+			// Заменяем блочные теги на перенос строки
+			if i+2 < len(lower) {
+				tag := lower[i+1:]
+				if strings.HasPrefix(tag, "p") || strings.HasPrefix(tag, "br") ||
+					strings.HasPrefix(tag, "div") || strings.HasPrefix(tag, "h") ||
+					strings.HasPrefix(tag, "li") || strings.HasPrefix(tag, "tr") ||
+					strings.HasPrefix(tag, "/p") || strings.HasPrefix(tag, "/div") {
+					sb.WriteByte('\n')
+				}
+			}
+		} else if c == '>' {
+			inTag = false
+		} else if !inTag {
+			// Декодируем базовые HTML entities
+			if c == '&' && i+3 < len(html) {
+				rest := html[i:]
+				switch {
+				case strings.HasPrefix(rest, "&amp;"):
+					sb.WriteByte('&')
+					i += 5
+					continue
+				case strings.HasPrefix(rest, "&lt;"):
+					sb.WriteByte('<')
+					i += 4
+					continue
+				case strings.HasPrefix(rest, "&gt;"):
+					sb.WriteByte('>')
+					i += 4
+					continue
+				case strings.HasPrefix(rest, "&nbsp;"):
+					sb.WriteByte(' ')
+					i += 6
+					continue
+				case strings.HasPrefix(rest, "&#"):
+					// Пропускаем числовые entities
+					end := strings.Index(rest, ";")
+					if end > 0 && end < 8 {
+						i += end + 1
+						continue
+					}
+				}
+			}
+			sb.WriteByte(c)
+		}
+		i++
+	}
+
+	// Нормализуем пробелы и пустые строки
+	lines := strings.Split(sb.String(), "\n")
+	var result []string
+	prevEmpty := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if !prevEmpty {
+				result = append(result, "")
+			}
+			prevEmpty = true
+		} else {
+			result = append(result, line)
+			prevEmpty = false
+		}
+	}
+	return strings.Join(result, "\n")
 }
 
 // ToolDefs возвращает описание инструментов для системного промпта
@@ -394,6 +833,30 @@ Run a shell command. Params: command
 Example:
 ` + "```" + `tool
 {"tool": "run_command", "params": {"command": "go build ./..."}}
+` + "```" + `
+
+### download_file
+Download a file from the internet. Params: url (required), path (optional save location)
+Example:
+` + "```" + `tool
+{"tool": "download_file", "params": {"url": "https://example.com/asset.png", "path": "assets/asset.png"}}
+` + "```" + `
+
+### web_search
+Search the web using DuckDuckGo. Returns top results with titles and URLs.
+Params: query (search query string)
+Use this to find documentation, examples, answers to errors, latest API info.
+Example:
+` + "```" + `tool
+{"tool": "web_search", "params": {"query": "mindustry mod javascript API blocks"}}
+` + "```" + `
+
+### fetch_page
+Fetch and read a web page as plain text. Use after web_search to read full content.
+Params: url (full URL to fetch)
+Example:
+` + "```" + `tool
+{"tool": "fetch_page", "params": {"url": "https://github.com/Anuken/Mindustry/wiki/Modding"}}
 ` + "```" + `
 `
 }

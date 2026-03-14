@@ -93,20 +93,13 @@ func (pc ProviderConfig) GetContextLength() int {
 
 // Config — главный конфиг TermCode
 type Config struct {
-	// Активный провайдер
 	ActiveProvider Provider `json:"active_provider"`
-
-	// Провайдеры
-	Providers map[Provider]ProviderConfig `json:"providers"`
-
-	// Рабочая директория (если пуста — текущая)
-	WorkDir string `json:"work_dir,omitempty"`
-
-	// Тема (dark / light)
-	Theme string `json:"theme"`
-
-	// Системный промпт
-	SystemPrompt string `json:"system_prompt"`
+	Providers      map[Provider]ProviderConfig `json:"providers"`
+	WorkDir        string   `json:"work_dir,omitempty"`
+	Theme          string   `json:"theme"`
+	// Language — язык интерфейса и системного промпта ("en" / "ru")
+	Language       string   `json:"language"`
+	SystemPrompt   string   `json:"system_prompt"`
 }
 
 // DefaultConfig возвращает конфиг с разумными дефолтами
@@ -131,7 +124,8 @@ func DefaultConfig() *Config {
 				Model:   "qwen/qwen3-8b:free",
 			},
 		},
-		Theme:     "dark",
+		Theme:        "dark",
+		Language:     "en",
 		SystemPrompt: `You are TermCode — an AI coding assistant running inside a terminal on Android (Termux).
 
 TOOL USAGE — CRITICAL:

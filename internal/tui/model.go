@@ -1498,11 +1498,11 @@ func (m Model) startPull(modelName string) (tea.Model, tea.Cmd) {
 	pc, _ := m.cfg.ActiveProviderConfig()
 	baseURL := strings.TrimRight(pc.BaseURL, "/")
 
-	return m, tea.Batch(m.spinner.Tick, streamOllamaPull(baseURL, modelName))
+	return m, tea.Batch(m.spinner.Tick, streamOllamaPull(baseURL, modelName, m.tr().PullDone))
 }
 
 // streamOllamaPull стримит прогресс ollama pull через /api/pull
-func streamOllamaPull(baseURL, modelName string) tea.Cmd {
+func streamOllamaPull(baseURL, modelName, pullDoneStr string) tea.Cmd {
 	return func() tea.Msg {
 		url := baseURL + "/api/pull"
 
@@ -1526,7 +1526,7 @@ func streamOllamaPull(baseURL, modelName string) tea.Cmd {
 			}
 
 			if done {
-				return pullProgressMsg{status: m.tr().PullDone, done: true}
+				return pullProgressMsg{status: pullDoneStr, done: true}
 			}
 
 			return pullProgressMsg{

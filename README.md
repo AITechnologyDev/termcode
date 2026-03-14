@@ -5,6 +5,7 @@
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://golang.org)
 [![Platform](https://img.shields.io/badge/platform-Android%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
+[![Release](https://img.shields.io/badge/release-v0.2.0-blue)]()
 
 TermCode is a terminal AI coding assistant written in Go. It runs natively in [Termux](https://termux.dev) on Android (no glibc, no Docker, no x86 required) and on any Linux/macOS machine.
 

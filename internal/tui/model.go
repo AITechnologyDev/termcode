@@ -1673,10 +1673,10 @@ func parseQuestionBlock(text string) (question string, options []string) {
 
 		// Собираем варианты начиная со следующей строки
 		var opts []string
-		for j := i + 1; j < len(lines) && j < i+12; j++ {
+		for j := i + 1; j < len(lines) && j < i+16; j++ {
 			l := strings.TrimSpace(lines[j])
 			if l == "" {
-				// Одна пустая строка — продолжаем (некоторые модели делают отступ)
+				// Пустая строка — продолжаем если вариантов ещё нет
 				if len(opts) > 0 {
 					break
 				}
@@ -1684,8 +1684,17 @@ func parseQuestionBlock(text string) (question string, options []string) {
 			}
 			if opt := extractListItem(l); opt != "" {
 				opts = append(opts, opt)
+			} else if len(opts) == 0 {
+				// Ещё не нашли ни одного варианта — пропускаем вводные строки
+				// типа "Я могу помочь с:" или "Варианты:"
+				// но только если строка короткая и не похожа на абзац
+				if len(l) < 80 && (strings.HasSuffix(l, ":") || strings.HasSuffix(l, ".")) {
+					continue
+				}
+				// Длинный абзац — это не список, прерываем
+				break
 			} else {
-				// Не список — прерываем
+				// Уже есть варианты — любая не-список строка = конец
 				break
 			}
 		}
@@ -1704,16 +1713,21 @@ func looksLikeQuestion(s string) bool {
 	if s == "" {
 		return false
 	}
-	// Должна заканчиваться на ? или содержать вопросительные слова
+	// Самый надёжный критерий — знак вопроса
 	if strings.HasSuffix(s, "?") {
 		return true
 	}
-	// Некоторые модели не ставят ? но используют фразы
+	// Без ? — только если строка содержит явные вопросительные слова
+	// И при этом не слишком короткая (чтобы не цеплять "что:" и т.п.)
+	if len(s) < 15 {
+		return false
+	}
 	lower := strings.ToLower(s)
+	// Только фразы которые однозначно указывают на вопрос без знака ?
 	questionPhrases := []string{
-		"which", "what", "how", "which one", "choose", "select", "pick",
-		"какой", "какую", "какое", "какие", "что", "как", "выбери", "выбер",
-		"хотел", "хотите", "предпочит", "первую очередь",
+		"what would you", "which would you", "what do you",
+		"что бы вы хотели", "что бы ты хотел", "что вы хотите",
+		"что ты хочешь", "что предпочитаете", "что предпочитаешь",
 	}
 	for _, phrase := range questionPhrases {
 		if strings.Contains(lower, phrase) && len(s) < 200 {

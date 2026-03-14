@@ -22,6 +22,87 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// ── i18n ──────────────────────────────────────────────────────────────────────
+
+type i18nStrings struct {
+	Placeholder        string
+	StatusReady        string
+	StatusGenerating   string
+	StatusLastTok      string
+	HintSend           string
+	HintNewline        string
+	HintCommands       string
+	HintModels         string
+	HintSave           string
+	HintLang           string
+	Thinking           string
+	LoadingModels      string
+	ModelSelectTitle   string
+	ModelSelectHint    string
+	ModelSelectCount   string
+	PullTitle          string
+	PullInterrupt      string
+	PullDone           string
+	QAHint             string
+	QASelected         string
+	ContextDropped     string
+}
+
+var i18nEN = i18nStrings{
+	Placeholder:      "Ask anything... (Enter to send, Shift+Enter for newline)",
+	StatusReady:      "✓ Ready — %d messages",
+	StatusGenerating: " Generating...",
+	StatusLastTok:    "last: %.1f tok/s · %d tok",
+	HintSend:         " send",
+	HintNewline:      " newline",
+	HintCommands:     " commands",
+	HintModels:       " models",
+	HintSave:         " save",
+	HintLang:         " Ctrl+P→lang",
+	Thinking:         "🧠 Thinking...",
+	LoadingModels:    "Loading...",
+	ModelSelectTitle: " TermCode — Select Model ",
+	ModelSelectHint:  "  ↑↓ navigate  Enter select  p pull new  q skip\n\n",
+	ModelSelectCount: "  Model %d/%d",
+	PullTitle:        " TermCode — Downloading Model ",
+	PullInterrupt:    " — cancel",
+	PullDone:         "Done!",
+	QAHint:           "  Space — select  ↑↓ — navigate  Enter — confirm  Esc — cancel",
+	QASelected:       "  ✓ Selected: %d",
+	ContextDropped:   "context: dropped %d old messages",
+}
+
+var i18nRU = i18nStrings{
+	Placeholder:      "Введи запрос... (Enter — отправить, Shift+Enter — перенос строки)",
+	StatusReady:      "✓ Готов — %d сообщений",
+	StatusGenerating: " Генерирую...",
+	StatusLastTok:    "последний: %.1f tok/s · %d tok",
+	HintSend:         " отправить",
+	HintNewline:      " перенос",
+	HintCommands:     " команды",
+	HintModels:       " модели",
+	HintSave:         " сохранить",
+	HintLang:         " Ctrl+P→язык",
+	Thinking:         "🧠 Думает...",
+	LoadingModels:    "Загрузка...",
+	ModelSelectTitle: " TermCode — Выбор модели ",
+	ModelSelectHint:  "  ↑↓ навигация  Enter выбрать  p скачать  q пропустить\n\n",
+	ModelSelectCount: "  Модель %d/%d",
+	PullTitle:        " TermCode — Загрузка модели ",
+	PullInterrupt:    " — прервать",
+	PullDone:         "Готово!",
+	QAHint:           "  Space — выбрать  ↑↓ — навигация  Enter — отправить  Esc — отмена",
+	QASelected:       "  ✓ Выбрано: %d",
+	ContextDropped:   "контекст: удалено %d старых сообщений",
+}
+
+func (m *Model) tr() i18nStrings {
+	if m.cfg != nil && m.cfg.Language == "ru" {
+		return i18nRU
+	}
+	return i18nEN
+}
+
 // ── Состояния TUI ─────────────────────────────────────────────────────────────
 
 type state int
@@ -181,7 +262,7 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 
 	// Textarea для ввода
 	ta := textarea.New()
-	ta.Placeholder = "Введи запрос... (Enter — отправить, Shift+Enter — перенос строки)"
+	ta.Placeholder = i18nEN.Placeholder
 	ta.Focus()
 	ta.SetWidth(80)
 	ta.SetHeight(3)
@@ -593,7 +674,7 @@ func (m *Model) streamAI() tea.Cmd {
 
 	apiMsgs, dropped := ai.TrimMessages(rawMsgs, systemPrompt, contextLength-maxTokens)
 	if dropped > 0 {
-		m.errMsg = fmt.Sprintf("контекст: удалено %d старых сообщений", dropped)
+		m.errMsg = fmt.Sprintf(m.tr().ContextDropped, dropped)
 	}
 
 	m.contextUsed = ai.SumTokens(apiMsgs) + ai.EstimateTokens(systemPrompt)
@@ -859,7 +940,7 @@ func (m Model) handleToolDone(msg toolDoneMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.width == 0 {
-		return "Загрузка..."
+		return m.tr().LoadingModels
 	}
 
 	// Экран выбора модели
@@ -912,7 +993,7 @@ func (m Model) View() string {
 func (m Model) renderModelSelect() string {
 	var sb strings.Builder
 
-	title := headerStyle.Render(" TermCode — Выбор модели ")
+	title := headerStyle.Render(m.tr().ModelSelectTitle)
 	sb.WriteString(title + "\n\n")
 
 	if m.modelsLoading {
@@ -928,7 +1009,7 @@ func (m Model) renderModelSelect() string {
 		return sb.String()
 	}
 
-	sb.WriteString(keyHintStyle.Render("  Выбери модель (↑↓ — навигация, Enter — выбрать, p — скачать новую, q — пропустить)\n\n"))
+	sb.WriteString(keyHintStyle.Render(m.tr().ModelSelectHint))
 
 	for i, model := range m.ollamaModels {
 		if i == m.modelCursor {
@@ -939,7 +1020,7 @@ func (m Model) renderModelSelect() string {
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(keyHintStyle.Render(fmt.Sprintf("  Модель %d/%d", m.modelCursor+1, len(m.ollamaModels))))
+	sb.WriteString(keyHintStyle.Render(fmt.Sprintf(m.tr().ModelSelectCount, m.modelCursor+1, len(m.ollamaModels))))
 	return sb.String()
 }
 
@@ -947,7 +1028,7 @@ func (m Model) renderModelSelect() string {
 func (m Model) renderPullScreen() string {
 	var sb strings.Builder
 
-	title := headerStyle.Render(" TermCode — Загрузка модели ")
+	title := headerStyle.Render(m.tr().PullTitle)
 	sb.WriteString(title + "\n\n")
 
 	model := assistantLabelStyle.Render(m.pullModelName)
@@ -977,7 +1058,7 @@ func (m Model) renderPullScreen() string {
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(keyStyle.Render("  Ctrl+C") + keyHintStyle.Render(" — прервать"))
+	sb.WriteString(keyStyle.Render("  Ctrl+C") + keyHintStyle.Render(m.tr().PullInterrupt))
 	return sb.String()
 }
 
@@ -1013,6 +1094,9 @@ func (m Model) renderHeader() string {
 
 // renderInput отрисовывает область ввода
 func (m Model) renderInput() string {
+	// Обновляем placeholder по текущему языку
+	m.input.Placeholder = m.tr().Placeholder
+
 	var style lipgloss.Style
 	if m.currentState == stateThinking {
 		style = inputContainerStyle
@@ -1036,16 +1120,16 @@ func (m Model) renderStatusBar() string {
 		if m.genSpeed > 0 {
 			speed = fmt.Sprintf(" %.1f tok/s · ~%d tok", m.genSpeed, m.genTokens)
 		}
-		left = statusBusyStyle.Render(m.spinner.View()+" Генерирую...") +
+		left = statusBusyStyle.Render(m.spinner.View()+m.tr().StatusGenerating) +
 			keyHintStyle.Render(speed)
 	case stateChat:
 		if m.errMsg != "" {
 			left = statusErrStyle.Render("✗ " + m.errMsg)
 		} else {
-			left = statusOKStyle.Render(fmt.Sprintf("✓ Готов — %d сообщений", len(m.sess.Messages)))
+			left = statusOKStyle.Render(fmt.Sprintf(m.tr().StatusReady, len(m.sess.Messages)))
 		}
 		if m.genSpeed > 0 {
-			right = keyHintStyle.Render(fmt.Sprintf("последний: %.1f tok/s · %d tok", m.genSpeed, m.genTokens))
+			right = keyHintStyle.Render(fmt.Sprintf(m.tr().StatusLastTok, m.genSpeed, m.genTokens))
 		}
 	}
 
@@ -1094,17 +1178,18 @@ func formatTok(n int) string {
 
 // renderHints отрисовывает подсказки клавиш
 func (m Model) renderHints() string {
+	t := m.tr()
 	lang := m.cfg.Language
 	if lang == "" {
 		lang = "en"
 	}
 	hints := []string{
-		keyStyle.Render("Enter") + keyHintStyle.Render(" send"),
-		keyStyle.Render("Shift+Enter") + keyHintStyle.Render(" newline"),
-		keyStyle.Render("Ctrl+P") + keyHintStyle.Render(" commands"),
-		keyStyle.Render("/models") + keyHintStyle.Render(" models"),
-		keyStyle.Render("Ctrl+S") + keyHintStyle.Render(" save"),
-		keyStyle.Render("[" + strings.ToUpper(lang) + "]") + keyHintStyle.Render(" Ctrl+P→lang"),
+		keyStyle.Render("Enter") + keyHintStyle.Render(t.HintSend),
+		keyStyle.Render("Shift+Enter") + keyHintStyle.Render(t.HintNewline),
+		keyStyle.Render("Ctrl+P") + keyHintStyle.Render(t.HintCommands),
+		keyStyle.Render("/models") + keyHintStyle.Render(t.HintModels),
+		keyStyle.Render("Ctrl+S") + keyHintStyle.Render(t.HintSave),
+		keyStyle.Render("[" + strings.ToUpper(lang) + "]") + keyHintStyle.Render(t.HintLang),
 	}
 	return keyHintStyle.Render(strings.Join(hints, "  "))
 }
@@ -1189,7 +1274,7 @@ func (m Model) renderMessages() string {
 			// Показываем индикатор что модель "думает"
 			thinkIndicator := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#5C6370")).Italic(true).
-				Render("🧠 Думает...")
+				Render(m.tr().Thinking)
 			if visible != "" {
 				rendered := renderMarkdown(visible, contentWidth)
 				sb.WriteString(assistantBubbleStyle.Width(contentWidth).Render(thinkIndicator + "\n\n" + rendered))
@@ -1441,7 +1526,7 @@ func streamOllamaPull(baseURL, modelName string) tea.Cmd {
 			}
 
 			if done {
-				return pullProgressMsg{status: "Готово!", done: true}
+				return pullProgressMsg{status: m.tr().PullDone, done: true}
 			}
 
 			return pullProgressMsg{
@@ -1520,52 +1605,160 @@ func parsePullLine(line string) (status string, completed, total int64, done boo
 
 // ── Интерактивные вопросы от AI ───────────────────────────────────────────────
 
-// parseQuestionBlock ищет ```question блок в тексте ответа AI.
-// Формат:
+// parseQuestionBlock ищет вопрос от AI в тексте ответа.
+// Поддерживает несколько форматов которые реально используют модели:
+//
+// Формат 1 — явный блок (наш формат):
 //
 //	```question
 //	Текст вопроса?
 //	- Вариант A
 //	- Вариант B
-//	- Вариант C
 //	```
 //
-// Возвращает текст вопроса и срез вариантов (может быть пустым).
+// Формат 2 — вопрос + нумерованный список:
+//
+//	Какой подход выбрать?
+//	1. Вариант A
+//	2. Вариант B
+//
+// Формат 3 — вопрос + маркированный список:
+//
+//	Что добавить?
+//	- Вариант A
+//	- Вариант B
+//
+// Формат 4 — вопрос в конце текста с вариантами:
+//
+//	...объяснение...
+//	Что бы вы хотели улучшить в первую очередь?
+//	- Вариант A
+//	- Вариант B
 func parseQuestionBlock(text string) (question string, options []string) {
+	// Формат 1: явный ```question блок — самый надёжный
 	const openTag = "```question"
-	const closeTag = "```"
-
-	start := strings.Index(text, openTag)
-	if start == -1 {
-		return "", nil
-	}
-	inner := text[start+len(openTag):]
-	end := strings.Index(inner, closeTag)
-	if end == -1 {
-		inner = strings.TrimSpace(inner)
-	} else {
-		inner = strings.TrimSpace(inner[:end])
-	}
-
-	lines := strings.Split(inner, "\n")
-	if len(lines) == 0 {
-		return "", nil
-	}
-
-	// Первая строка — текст вопроса
-	question = strings.TrimSpace(lines[0])
-
-	// Остальные строки начинающиеся с "- " — варианты
-	for _, line := range lines[1:] {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- ") {
-			opt := strings.TrimPrefix(line, "- ")
-			if opt != "" {
-				options = append(options, opt)
+	if start := strings.Index(text, openTag); start != -1 {
+		inner := text[start+len(openTag):]
+		if end := strings.Index(inner, "```"); end != -1 {
+			inner = strings.TrimSpace(inner[:end])
+		} else {
+			inner = strings.TrimSpace(inner)
+		}
+		lines := strings.Split(inner, "\n")
+		if len(lines) > 0 {
+			question = strings.TrimSpace(lines[0])
+			for _, line := range lines[1:] {
+				line = strings.TrimSpace(line)
+				if opt := extractListItem(line); opt != "" {
+					options = append(options, opt)
+				}
+			}
+			if question != "" {
+				return question, options
 			}
 		}
 	}
-	return question, options
+
+	// Форматы 2-4: эвристический поиск — вопрос + список вариантов
+	// Условия срабатывания:
+	// - строка оканчивается на ? (вопрос)
+	// - сразу после неё идут 2+ строки с маркерами (-, *, •, 1., 2., ...)
+	// - список не слишком длинный (не TOC и не обычный текст)
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if !looksLikeQuestion(line) {
+			continue
+		}
+
+		// Собираем варианты начиная со следующей строки
+		var opts []string
+		for j := i + 1; j < len(lines) && j < i+12; j++ {
+			l := strings.TrimSpace(lines[j])
+			if l == "" {
+				// Одна пустая строка — продолжаем (некоторые модели делают отступ)
+				if len(opts) > 0 {
+					break
+				}
+				continue
+			}
+			if opt := extractListItem(l); opt != "" {
+				opts = append(opts, opt)
+			} else {
+				// Не список — прерываем
+				break
+			}
+		}
+
+		// Требуем минимум 2 варианта чтобы избежать ложных срабатываний
+		if len(opts) >= 2 {
+			return line, opts
+		}
+	}
+
+	return "", nil
+}
+
+// looksLikeQuestion возвращает true если строка похожа на вопрос
+func looksLikeQuestion(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Должна заканчиваться на ? или содержать вопросительные слова
+	if strings.HasSuffix(s, "?") {
+		return true
+	}
+	// Некоторые модели не ставят ? но используют фразы
+	lower := strings.ToLower(s)
+	questionPhrases := []string{
+		"which", "what", "how", "which one", "choose", "select", "pick",
+		"какой", "какую", "какое", "какие", "что", "как", "выбери", "выбер",
+		"хотел", "хотите", "предпочит", "первую очередь",
+	}
+	for _, phrase := range questionPhrases {
+		if strings.Contains(lower, phrase) && len(s) < 200 {
+			return true
+		}
+	}
+	return false
+}
+
+// extractListItem извлекает текст из строки-элемента списка
+// Поддерживает: "- текст", "* текст", "• текст", "1. текст", "1) текст"
+func extractListItem(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Маркированный список: - * •
+	for _, prefix := range []string{"- ", "* ", "• ", "– ", "— "} {
+		if strings.HasPrefix(s, prefix) {
+			opt := strings.TrimSpace(strings.TrimPrefix(s, prefix))
+			if opt != "" && len(opt) < 200 {
+				return opt
+			}
+		}
+	}
+	// Нумерованный список: "1. " "2) " "1: "
+	if len(s) >= 3 {
+		// Цифра в начале
+		i := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i > 0 && i < len(s) {
+			sep := s[i]
+			if sep == '.' || sep == ')' || sep == ':' {
+				rest := strings.TrimSpace(s[i+1:])
+				// Убираем вложенные маркеры типа "1. **Вариант**"
+				rest = strings.TrimPrefix(rest, "**")
+				rest = strings.TrimSuffix(rest, "**")
+				if rest != "" && len(rest) < 200 {
+					return rest
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // submitQuestionAnswer отправляет выбранный ответ на вопрос AI
@@ -1628,7 +1821,7 @@ func (m Model) renderQuestionPanel() string {
 		Render("❓ " + m.question)
 	hint := lipgloss.NewStyle().
 		Foreground(colorMuted).Italic(true).
-		Render("  Space — выбрать  ↑↓ — навигация  Enter — отправить  Esc — отмена")
+		Render(m.tr().QAHint)
 	sb.WriteString(questionText + "\n")
 	sb.WriteString(hint + "\n\n")
 
@@ -1706,7 +1899,7 @@ func (m Model) renderQuestionPanel() string {
 		if count > 0 {
 			sb.WriteString("\n" + lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#98C379")).
-				Render(fmt.Sprintf("  ✓ Выбрано: %d", count)))
+				Render(fmt.Sprintf(m.tr().QASelected, count)))
 		}
 	}
 

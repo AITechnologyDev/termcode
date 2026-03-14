@@ -1873,6 +1873,7 @@ func (m Model) submitQuestionAnswer() (tea.Model, tea.Cmd) {
 
 	// Сбрасываем состояние Q&A
 	wasToolCall := m.questionToolCall
+	savedQuestion := m.question
 	m.question = ""
 	m.questionOptions = nil
 	m.questionCursor = 0
@@ -1888,10 +1889,11 @@ func (m Model) submitQuestionAnswer() (tea.Model, tea.Cmd) {
 	m.genSpeed = 0
 
 	if wasToolCall {
-		// Ответ на ask_user — добавляем как tool result и продолжаем стрим AI
-		m.sess.AddMessage(session.RoleTool, fmt.Sprintf("[tool:ask_user]\n%s", answer))
+		// Ответ на ask_user — user роль с контекстом вопроса
+		// (RoleTool не поддерживается GLM/Qwen через Ollama)
+		m.sess.AddMessage(session.RoleUser,
+			fmt.Sprintf("[Answer to: %s]\n%s", savedQuestion, answer))
 	} else {
-		// Обычный Q&A — добавляем как сообщение пользователя
 		m.sess.AddMessage(session.RoleUser, answer)
 	}
 

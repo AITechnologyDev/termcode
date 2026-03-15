@@ -28,7 +28,7 @@ type StreamChunk struct {
 
 // Provider — интерфейс AI провайдера
 type Provider interface {
-	Stream(messages []Message, system string, maxTokens int) (<-chan StreamChunk, error)
+	Stream(messages []Message, system string, maxTokens int, contextLength int) (<-chan StreamChunk, error)
 	Name() string
 	Model() string
 }
@@ -118,10 +118,10 @@ func FetchOllamaModelContext(baseURL, modelName string) (contextLength int, err 
 }
 
 type ollamaRequest struct {
-	Model    string             `json:"model"`
-	Messages []ollamaMessage    `json:"messages"`
-	Stream   bool               `json:"stream"`
-	Options  ollamaOptions      `json:"options"`
+	Model    string        `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Stream   bool          `json:"stream"`
+	Options  ollamaOptions `json:"options"`
 }
 
 type ollamaMessage struct {
@@ -130,8 +130,19 @@ type ollamaMessage struct {
 }
 
 type ollamaOptions struct {
-	NumPredict int     `json:"num_predict"`
+	NumPredict  int     `json:"num_predict"`
+	NumCtx      int     `json:"num_ctx,omitempty"` // размер контекстного окна
 	Temperature float64 `json:"temperature"`
+}
+
+// numPredictForModel возвращает лимит токенов для Ollama.
+// Для cloud моделей используем -1 (без лимита).
+// Для локальных — явный лимит чтобы не забить RAM.
+func numPredictForModel(model string, maxTokens int) int {
+	if strings.HasSuffix(model, ":cloud") {
+		return -1
+	}
+	return maxTokens
 }
 
 type ollamaStreamResponse struct {
@@ -139,7 +150,7 @@ type ollamaStreamResponse struct {
 	Done    bool          `json:"done"`
 }
 
-func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int) (<-chan StreamChunk, error) {
+func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int, contextLength int) (<-chan StreamChunk, error) {
 	msgs := make([]ollamaMessage, 0, len(messages)+1)
 	if system != "" {
 		msgs = append(msgs, ollamaMessage{Role: "system", Content: system})
@@ -153,7 +164,8 @@ func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int
 		Messages: msgs,
 		Stream:   true,
 		Options: ollamaOptions{
-			NumPredict:  maxTokens,
+			NumPredict:  numPredictForModel(p.cfg.Model, maxTokens),
+			NumCtx:      contextLength, // передаём реальный контекст в Ollama
 			Temperature: 0.1,
 		},
 	}
@@ -244,7 +256,7 @@ type openAIStreamResponse struct {
 	} `json:"choices"`
 }
 
-func (p *OpenAIProvider) Stream(messages []Message, system string, maxTokens int) (<-chan StreamChunk, error) {
+func (p *OpenAIProvider) Stream(messages []Message, system string, maxTokens int, contextLength int) (<-chan StreamChunk, error) {
 	msgs := make([]openAIMessage, 0, len(messages)+1)
 	if system != "" {
 		msgs = append(msgs, openAIMessage{Role: "system", Content: system})
@@ -357,7 +369,7 @@ type anthropicStreamEvent struct {
 	} `json:"delta,omitempty"`
 }
 
-func (p *AnthropicProvider) Stream(messages []Message, system string, maxTokens int) (<-chan StreamChunk, error) {
+func (p *AnthropicProvider) Stream(messages []Message, system string, maxTokens int, contextLength int) (<-chan StreamChunk, error) {
 	msgs := make([]anthropicMessage, 0, len(messages))
 	for _, m := range messages {
 		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.Content})

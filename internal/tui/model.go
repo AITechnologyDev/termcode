@@ -135,6 +135,12 @@ type toolDoneMsg struct {
 // saveSessionMsg — сигнал сохранить сессию
 type saveSessionMsg struct{}
 
+// contextDetectedMsg — результат автодетекта контекста модели через /api/show
+type contextDetectedMsg struct {
+	contextLength int
+	err           error
+}
+
 // ollamaModelsMsg — список моделей от Ollama
 type ollamaModelsMsg struct {
 	models []string
@@ -302,11 +308,19 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		textarea.Blink,
 		m.spinner.Tick,
 		fetchOllamaModels(m.cfg),
-	)
+	}
+	// Запускаем детект контекста при старте для Ollama
+	if m.cfg.ActiveProvider == config.ProviderOllama {
+		pc, ok := m.cfg.ActiveProviderConfig()
+		if ok && pc.ContextLength == 0 {
+			cmds = append(cmds, fetchContextLength(pc.BaseURL, pc.Model))
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -608,6 +622,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_ = m.sess.Save()
 		return m, nil
 
+	case contextDetectedMsg:
+		if msg.err == nil && msg.contextLength > 0 {
+			// Сохраняем в конфиг и обновляем лимит
+			pc, _ := m.cfg.ActiveProviderConfig()
+			if pc.ContextLength != msg.contextLength {
+				pc.ContextLength = msg.contextLength
+				providers := m.cfg.Providers
+				providers[m.cfg.ActiveProvider] = pc
+				m.cfg.Providers = providers
+				_ = m.cfg.Save()
+			}
+			m.contextLimit = msg.contextLength
+		}
+		return m, nil
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -663,18 +692,11 @@ func (m *Model) streamAI() tea.Cmd {
 	maxTokens := pc.GetMaxTokens()
 	contextLength := pc.GetContextLength()
 
-	// Для Ollama — пробуем получить реальный контекст через /api/show
-	// Если кешировано в ProviderConfig.ContextLength — используем кеш
+	// Если контекст ещё не детектировался для Ollama — запускаем детект параллельно
+	// и используем пока что значение из таблицы
+	var detectCmd tea.Cmd
 	if m.cfg.ActiveProvider == config.ProviderOllama && pc.ContextLength == 0 {
-		if detected, err := ai.FetchOllamaModelContext(pc.BaseURL, pc.Model); err == nil && detected > 0 {
-			// Кешируем в конфиге чтобы не делать запрос каждый раз
-			providersCopy := m.cfg.Providers
-			pc.ContextLength = detected
-			providersCopy[m.cfg.ActiveProvider] = pc
-			m.cfg.Providers = providersCopy
-			_ = m.cfg.Save()
-			contextLength = detected
-		}
+		detectCmd = fetchContextLength(pc.BaseURL, pc.Model)
 	}
 
 	// Строим сообщения для API
@@ -731,9 +753,10 @@ func (m *Model) streamAI() tea.Cmd {
 	m.streamCancel = cancel
 
 	provider := m.provider
+	ctxLen := contextLength // захватываем для горутины
 
-	return func() tea.Msg {
-		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTokens)
+	streamCmd := func() tea.Msg {
+		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTokens, ctxLen)
 		if err != nil {
 			cancel()
 			return aiChunkMsg{err: err}
@@ -741,7 +764,6 @@ func (m *Model) streamAI() tea.Cmd {
 
 		select {
 		case <-ctx.Done():
-			// Стрим отменён — горутина провайдера завершится сама когда закроет ch
 			return aiChunkMsg{done: true}
 		case chunk, ok := <-ch:
 			if !ok {
@@ -753,6 +775,11 @@ func (m *Model) streamAI() tea.Cmd {
 			return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch, ctx: ctx}
 		}
 	}
+
+	if detectCmd != nil {
+		return tea.Batch(streamCmd, detectCmd)
+	}
+	return streamCmd
 }
 
 // streamReaderMsg — внутреннее сообщение для продолжения чтения стрима
@@ -1500,6 +1527,14 @@ func renderInlineBold(line string) string {
 // ── Ollama: список моделей ────────────────────────────────────────────────────
 
 // fetchOllamaModels загружает список установленных моделей из Ollama
+// fetchContextLength асинхронно получает реальный контекст модели через /api/show
+func fetchContextLength(baseURL, model string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, err := ai.FetchOllamaModelContext(baseURL, model)
+		return contextDetectedMsg{contextLength: ctx, err: err}
+	}
+}
+
 func fetchOllamaModels(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		pc, ok := cfg.ActiveProviderConfig()
@@ -1555,6 +1590,11 @@ func (m Model) selectModel(name string) (tea.Model, tea.Cmd) {
 	m.sess.Model = name
 	m.currentState = stateChat
 	m.refreshViewport()
+
+	// Сразу запускаем асинхронный детект контекста для новой модели
+	if m.cfg.ActiveProvider == config.ProviderOllama {
+		return m, fetchContextLength(pc.BaseURL, name)
+	}
 	return m, nil
 }
 

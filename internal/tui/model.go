@@ -137,8 +137,9 @@ type saveSessionMsg struct{}
 
 // contextDetectedMsg — результат автодетекта контекста модели через /api/show
 type contextDetectedMsg struct {
-	contextLength int
-	err           error
+	contextLength   int
+	maxOutputTokens int
+	err             error
 }
 
 // ollamaModelsMsg — список моделей от Ollama
@@ -624,10 +625,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case contextDetectedMsg:
 		if msg.err == nil && msg.contextLength > 0 {
-			// Сохраняем в конфиг и обновляем лимит
 			pc, _ := m.cfg.ActiveProviderConfig()
+			changed := false
 			if pc.ContextLength != msg.contextLength {
 				pc.ContextLength = msg.contextLength
+				changed = true
+			}
+			// Сохраняем MaxOutputTokens если модель его сообщила
+			if msg.maxOutputTokens > 0 && pc.MaxTokens != msg.maxOutputTokens {
+				pc.MaxTokens = msg.maxOutputTokens
+				changed = true
+			}
+			if changed {
 				providers := m.cfg.Providers
 				providers[m.cfg.ActiveProvider] = pc
 				m.cfg.Providers = providers
@@ -1530,8 +1539,12 @@ func renderInlineBold(line string) string {
 // fetchContextLength асинхронно получает реальный контекст модели через /api/show
 func fetchContextLength(baseURL, model string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, err := ai.FetchOllamaModelContext(baseURL, model)
-		return contextDetectedMsg{contextLength: ctx, err: err}
+		limits, err := ai.FetchOllamaModelLimits(baseURL, model)
+		return contextDetectedMsg{
+			contextLength:   limits.ContextLength,
+			maxOutputTokens: limits.MaxOutputTokens,
+			err:             err,
+		}
 	}
 }
 

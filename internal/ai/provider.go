@@ -69,10 +69,14 @@ type ollamaShowResponse struct {
 	} `json:"details"`
 }
 
-// FetchOllamaModelContext запрашивает реальный context_length модели через /api/show
-// Возвращает (contextLength, maxTokens, error)
-// contextLength = 0 если не удалось определить
-func FetchOllamaModelContext(baseURL, modelName string) (contextLength int, err error) {
+// OllamaModelLimits содержит лимиты модели из /api/show
+type OllamaModelLimits struct {
+	ContextLength   int
+	MaxOutputTokens int
+}
+
+// FetchOllamaModelLimits запрашивает лимиты модели через /api/show
+func FetchOllamaModelLimits(baseURL, modelName string) (OllamaModelLimits, error) {
 	type showReq struct {
 		Name string `json:"name"`
 	}
@@ -81,40 +85,64 @@ func FetchOllamaModelContext(baseURL, modelName string) (contextLength int, err 
 	url := strings.TrimRight(baseURL, "/") + "/api/show"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return OllamaModelLimits{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return OllamaModelLimits{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("ollama /api/show: HTTP %d", resp.StatusCode)
+		return OllamaModelLimits{}, fmt.Errorf("ollama /api/show: HTTP %d", resp.StatusCode)
 	}
 
 	var show ollamaShowResponse
 	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
-		return 0, err
+		return OllamaModelLimits{}, err
 	}
 
-	// Ищем context_length в model_info — ключ может быть разным у разных архитектур
-	// например: "qwen3next.context_length", "llama.context_length", "qwen2.context_length"
+	var limits OllamaModelLimits
 	for key, val := range show.ModelInfo {
-		if strings.HasSuffix(key, ".context_length") || key == "context_length" {
-			switch v := val.(type) {
-			case float64:
-				return int(v), nil
-			case int:
-				return v, nil
-			}
+		v, ok := toInt(val)
+		if !ok {
+			continue
+		}
+		k := strings.ToLower(key)
+		// context_length — размер окна контекста
+		if strings.HasSuffix(k, ".context_length") || k == "context_length" {
+			limits.ContextLength = v
+		}
+		// max_output_tokens — максимум токенов в ответе
+		if strings.HasSuffix(k, ".max_output_tokens") || k == "max_output_tokens" ||
+			strings.HasSuffix(k, ".max_tokens") || k == "max_tokens" {
+			limits.MaxOutputTokens = v
 		}
 	}
 
-	return 0, fmt.Errorf("context_length не найден в model_info")
+	if limits.ContextLength == 0 {
+		return limits, fmt.Errorf("context_length не найден в model_info")
+	}
+	return limits, nil
+}
+
+// FetchOllamaModelContext — обратная совместимость
+func FetchOllamaModelContext(baseURL, modelName string) (int, error) {
+	limits, err := FetchOllamaModelLimits(baseURL, modelName)
+	return limits.ContextLength, err
+}
+
+func toInt(v any) (int, bool) {
+	switch val := v.(type) {
+	case float64:
+		return int(val), true
+	case int:
+		return val, true
+	}
+	return 0, false
 }
 
 type ollamaRequest struct {
@@ -136,16 +164,17 @@ type ollamaOptions struct {
 }
 
 // numPredictForModel возвращает лимит токенов ответа для Ollama.
-// Для cloud — большой лимит, они сами остановятся по EOS.
-// Для локальных — явный лимит чтобы не забить RAM.
+// Использует закешированный лимит из конфига (детектируется через /api/show).
+// Для cloud без кеша — консервативный дефолт 16384.
 func numPredictForModel(model string, maxTokens int) int {
+	if maxTokens > 0 {
+		return maxTokens
+	}
+	// Дефолт если кеш ещё не заполнен
 	if strings.HasSuffix(model, ":cloud") {
-		return 65536 // достаточно для любого ответа с кодом
+		return 16384
 	}
-	if maxTokens <= 0 {
-		return 4096
-	}
-	return maxTokens
+	return 4096
 }
 
 // numCtxForModel возвращает num_ctx для Ollama.

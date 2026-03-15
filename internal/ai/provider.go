@@ -135,14 +135,33 @@ type ollamaOptions struct {
 	Temperature float64 `json:"temperature"`
 }
 
-// numPredictForModel возвращает лимит токенов для Ollama.
-// Для cloud моделей используем -1 (без лимита).
+// numPredictForModel возвращает лимит токенов ответа для Ollama.
+// Для cloud — большой лимит, они сами остановятся по EOS.
 // Для локальных — явный лимит чтобы не забить RAM.
 func numPredictForModel(model string, maxTokens int) int {
 	if strings.HasSuffix(model, ":cloud") {
-		return -1
+		return 65536 // достаточно для любого ответа с кодом
+	}
+	if maxTokens <= 0 {
+		return 4096
 	}
 	return maxTokens
+}
+
+// numCtxForModel возвращает num_ctx для Ollama.
+// Передаём для всех моделей — и локальных и cloud.
+// Для cloud это гарантирует что ответ не обрежется по середине.
+// 0 = не передаём (используется дефолт модели).
+func numCtxForModel(model string, contextLength int) int {
+	if contextLength <= 0 {
+		return 0
+	}
+	// Для cloud моделей ограничиваем разумным значением
+	// чтобы не вызвать ошибку на сервере
+	if strings.HasSuffix(model, ":cloud") && contextLength > 131072 {
+		return 131072
+	}
+	return contextLength
 }
 
 type ollamaStreamResponse struct {
@@ -165,7 +184,7 @@ func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int
 		Stream:   true,
 		Options: ollamaOptions{
 			NumPredict:  numPredictForModel(p.cfg.Model, maxTokens),
-			NumCtx:      contextLength, // передаём реальный контекст в Ollama
+			NumCtx:      numCtxForModel(p.cfg.Model, contextLength),
 			Temperature: 0.1,
 		},
 	}

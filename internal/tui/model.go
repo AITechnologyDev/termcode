@@ -46,6 +46,27 @@ type i18nStrings struct {
 	QAHint             string
 	QASelected         string
 	ContextDropped     string
+	// Welcome
+	WelcomeMsg         string
+	// Palette search
+	PaletteSearch      string
+	PaletteHint        string
+	// Palette items
+	PalCmdPalette      string; PalCmdPaletteDesc      string
+	PalModels          string; PalModelsDesc          string
+	PalPull            string; PalPullDesc            string
+	PalNew             string; PalNewDesc             string
+	PalLang            string; PalLangDesc            string
+	PalSessions        string; PalSessionsDesc        string
+	PalSave            string; PalSaveDesc            string
+	PalLS              string; PalLSDesc              string
+	PalGit             string; PalGitDesc             string
+	PalBuild           string; PalBuildDesc           string
+	PalTest            string; PalTestDesc            string
+	PalCtx             string; PalCtxDesc             string
+	PalClear           string; PalClearDesc           string
+	// Session screen
+	SessionHint        string
 }
 
 var i18nEN = i18nStrings{
@@ -70,6 +91,23 @@ var i18nEN = i18nStrings{
 	QAHint:           "  Space — select  ↑↓ — navigate  Enter — confirm  Esc — cancel",
 	QASelected:       "  ✓ Selected: %d",
 	ContextDropped:   "context: dropped %d old messages",
+	WelcomeMsg:       "  Welcome to TermCode 🚀\n  Ask a question or request a file change.",
+	PaletteSearch:    "Type to search...",
+	PaletteHint:      "  ↑↓ navigate  Enter select  Esc close",
+	PalCmdPalette: "Command Palette", PalCmdPaletteDesc: "Open this palette",
+	PalModels: "Switch Model", PalModelsDesc: "Show Ollama model list",
+	PalPull: "Pull Model (ollama pull)", PalPullDesc: "Enter model name to download",
+	PalNew: "New Session", PalNewDesc: "Start new chat (current will be saved)",
+	PalLang: "Switch Language / Сменить язык", PalLangDesc: "EN ↔ RU — interface and AI response language",
+	PalSessions: "Load Session", PalSessionsDesc: "Open list of saved chats",
+	PalSave: "Save Session", PalSaveDesc: "Save chat history to disk",
+	PalLS: "Project Files", PalLSDesc: "Show file tree of working directory",
+	PalGit: "Git Status", PalGitDesc: "Show git status of project",
+	PalBuild: "Go Build", PalBuildDesc: "Run go build ./...",
+	PalTest: "Go Test", PalTestDesc: "Run go test ./...",
+	PalCtx: "Context Usage", PalCtxDesc: "How many tokens the current history uses",
+	PalClear: "Clear Screen", PalClearDesc: "Clear viewport (history is kept)",
+	SessionHint: "  ↑↓ navigate  Enter load  Backspace delete  Esc back\n\n",
 }
 
 var i18nRU = i18nStrings{
@@ -94,6 +132,23 @@ var i18nRU = i18nStrings{
 	QAHint:           "  Space — выбрать  ↑↓ — навигация  Enter — отправить  Esc — отмена",
 	QASelected:       "  ✓ Выбрано: %d",
 	ContextDropped:   "контекст: удалено %d старых сообщений",
+	WelcomeMsg:       "  Добро пожаловать в TermCode 🚀\n  Задай вопрос или попроси изменить файл проекта.",
+	PaletteSearch:    "Введи для поиска...",
+	PaletteHint:      "  ↑↓ навигация  Enter выбрать  Esc закрыть",
+	PalCmdPalette: "Палитра команд", PalCmdPaletteDesc: "Открыть эту палитру",
+	PalModels: "Сменить модель", PalModelsDesc: "Показать список моделей Ollama",
+	PalPull: "Скачать модель (ollama pull)", PalPullDesc: "Ввести имя модели для загрузки",
+	PalNew: "Новая сессия", PalNewDesc: "Начать новый диалог (текущий сохранится)",
+	PalLang: "Сменить язык / Switch Language", PalLangDesc: "EN ↔ RU — язык интерфейса и ответов AI",
+	PalSessions: "Загрузить сессию", PalSessionsDesc: "Открыть список сохранённых диалогов",
+	PalSave: "Сохранить сессию", PalSaveDesc: "Сохранить историю диалога на диск",
+	PalLS: "Список файлов проекта", PalLSDesc: "Показать дерево файлов в рабочей директории",
+	PalGit: "Git статус", PalGitDesc: "Показать git status проекта",
+	PalBuild: "Go build", PalBuildDesc: "Запустить go build ./...",
+	PalTest: "Go test", PalTestDesc: "Запустить go test ./...",
+	PalCtx: "Использование контекста", PalCtxDesc: "Сколько токенов занимает текущая история",
+	PalClear: "Очистить экран", PalClearDesc: "Очистить viewport (история сохраняется)",
+	SessionHint: m.tr().SessionHint,
 }
 
 func (m *Model) tr() i18nStrings {
@@ -300,7 +355,7 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		currentState: stateModelSelect,
 		modelsLoading: true,
 	}
-	m.paletteItems = buildPaletteItems()
+	m.paletteItems = m.buildPaletteItems()
 	m.thinkExpanded = make(map[int]bool)
 	m.questionSelected = make(map[int]bool)
 	return m, nil
@@ -583,7 +638,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyCtrlP:
-			// Ctrl+P — открыть палитру команд
+			// Ctrl+P — открыть палитру команд (пересобираем с текущим языком)
+			m.paletteItems = m.buildPaletteItems()
 			m.currentState = statePalette
 			m.paletteCursor = 0
 			m.paletteFilter = ""
@@ -1097,35 +1153,71 @@ func (m Model) View() string {
 // renderModelSelect — экран выбора модели
 func (m Model) renderModelSelect() string {
 	var sb strings.Builder
+	t := m.tr()
+	w := m.width - 4
+	if w < 20 {
+		w = 20
+	}
 
-	title := headerStyle.Render(m.tr().ModelSelectTitle)
+	title := headerStyle.Render(t.ModelSelectTitle)
 	sb.WriteString(title + "\n\n")
 
 	if m.modelsLoading {
-		sb.WriteString(fmt.Sprintf("  %s Загружаем список моделей Ollama...\n", m.spinner.View()))
+		sb.WriteString(fmt.Sprintf("  %s Loading Ollama models...\n", m.spinner.View()))
 		return sb.String()
 	}
 
 	if len(m.ollamaModels) == 0 {
-		sb.WriteString(statusErrStyle.Render("  Ollama недоступна или нет моделей.") + "\n\n")
-		sb.WriteString(keyHintStyle.Render("  Запусти: ollama serve\n"))
-		sb.WriteString(keyHintStyle.Render("  Скачай модель: /pull qwen2.5-coder:7b\n\n"))
-		sb.WriteString(keyStyle.Render("  q") + keyHintStyle.Render(" — продолжить без выбора\n"))
+		sb.WriteString(statusErrStyle.Render("  Ollama unavailable or no models.") + "\n\n")
+		sb.WriteString(keyHintStyle.Render("  Run: ollama serve\n"))
+		sb.WriteString(keyHintStyle.Render("  Pull a model: /pull qwen2.5-coder:7b\n\n"))
+		sb.WriteString(keyStyle.Render("  q") + keyHintStyle.Render(" — continue without selecting\n"))
 		return sb.String()
 	}
 
-	sb.WriteString(keyHintStyle.Render(m.tr().ModelSelectHint))
+	sb.WriteString(keyHintStyle.Render(t.ModelSelectHint))
 
-	for i, model := range m.ollamaModels {
+	// Рамка вокруг списка
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorPrimary).
+		Width(w).
+		Padding(0, 1)
+
+	var listSb strings.Builder
+	maxVisible := m.height - 10
+	if maxVisible < 3 {
+		maxVisible = 3
+	}
+
+	// Скроллинг — показываем окно вокруг курсора
+	start := 0
+	if m.modelCursor >= maxVisible {
+		start = m.modelCursor - maxVisible + 1
+	}
+	end := start + maxVisible
+	if end > len(m.ollamaModels) {
+		end = len(m.ollamaModels)
+	}
+
+	for i := start; i < end; i++ {
+		model := m.ollamaModels[i]
+		// Обрезаем длинные имена
+		maxNameW := w - 6
+		if len(model) > maxNameW {
+			model = model[:maxNameW-1] + "…"
+		}
 		if i == m.modelCursor {
-			sb.WriteString(userBubbleStyle.Render(fmt.Sprintf("  ▶ %s", model)) + "\n")
+			line := userBubbleStyle.Width(w - 2).Render("▶ " + model)
+			listSb.WriteString(line + "\n")
 		} else {
-			sb.WriteString(fmt.Sprintf("    %s\n", model))
+			listSb.WriteString(fmt.Sprintf("  %s\n", model))
 		}
 	}
 
-	sb.WriteString("\n")
-	sb.WriteString(keyHintStyle.Render(fmt.Sprintf(m.tr().ModelSelectCount, m.modelCursor+1, len(m.ollamaModels))))
+	sb.WriteString(boxStyle.Render(strings.TrimRight(listSb.String(), "\n")))
+	sb.WriteString("\n\n")
+	sb.WriteString(keyHintStyle.Render(fmt.Sprintf(t.ModelSelectCount, m.modelCursor+1, len(m.ollamaModels))))
 	return sb.String()
 }
 
@@ -1342,7 +1434,7 @@ func (m Model) renderMessages() string {
 		welcome := lipgloss.NewStyle().
 			Foreground(colorMuted).
 			MarginTop(2).
-			Render("  Добро пожаловать в TermCode 🚀\n  Задай вопрос или попроси изменить файл проекта.")
+			Render(m.tr().WelcomeMsg)
 		return welcome
 	}
 
@@ -2071,12 +2163,13 @@ func (m Model) renderQuestionPanel() string {
 
 // ── Палитра команд (Ctrl+P) ───────────────────────────────────────────────────
 
-// buildPaletteItems возвращает полный список команд палитры
-func buildPaletteItems() []paletteItem {
+// buildPaletteItems возвращает полный список команд палитры с учётом языка
+func (m Model) buildPaletteItems() []paletteItem {
+	t := m.tr()
 	return []paletteItem{
 		{
-			key: "Ctrl+P", title: "Палитра команд",
-			description: "Открыть эту палитру",
+			key: "Ctrl+P", title: t.PalCmdPalette,
+			description: t.PalCmdPaletteDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = statePalette
 				m.paletteCursor = 0
@@ -2085,8 +2178,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "/models", title: "Сменить модель",
-			description: "Показать список моделей Ollama",
+			key: "/models", title: t.PalModels,
+			description: t.PalModelsDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateModelSelect
 				m.modelsLoading = true
@@ -2095,8 +2188,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "/pull", title: "Скачать модель (ollama pull)",
-			description: "Ввести имя модели для загрузки",
+			key: "/pull", title: t.PalPull,
+			description: t.PalPullDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateChat
 				m.input.SetValue("/pull ")
@@ -2105,8 +2198,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "new", title: "Новая сессия",
-			description: "Начать новый диалог (текущий сохранится)",
+			key: "new", title: t.PalNew,
+			description: t.PalNewDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				_ = m.sess.Save()
 				pc, _ := m.cfg.ActiveProviderConfig()
@@ -2120,8 +2213,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "lang", title: "Сменить язык / Switch Language",
-			description: "EN ↔ RU — язык интерфейса и ответов AI",
+			key: "lang", title: t.PalLang,
+			description: t.PalLangDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.paletteFilter = ""
 				m.currentState = stateChat
@@ -2131,12 +2224,14 @@ func buildPaletteItems() []paletteItem {
 					m.cfg.Language = "ru"
 				}
 				_ = m.cfg.Save()
+				// Перестраиваем палитру с новым языком
+				m.paletteItems = m.buildPaletteItems()
 				return m, nil
 			},
 		},
 		{
-			key: "sessions", title: "Загрузить сессию",
-			description: "Открыть список сохранённых диалогов",
+			key: "sessions", title: t.PalSessions,
+			description: t.PalSessionsDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateSessionLoad
 				m.sessionsLoading = true
@@ -2145,11 +2240,11 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "Ctrl+S", title: "Сохранить сессию",
-			description: "Сохранить историю диалога на диск",
+			key: "Ctrl+S", title: t.PalSave,
+			description: t.PalSaveDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				if err := m.sess.Save(); err != nil {
-					m.errMsg = "Ошибка сохранения: " + err.Error()
+					m.errMsg = "Save error: " + err.Error()
 				}
 				m.currentState = stateChat
 				m.paletteFilter = ""
@@ -2157,30 +2252,29 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "ls", title: "Список файлов проекта",
-			description: "Показать дерево файлов в рабочей директории",
+			key: "ls", title: t.PalLS,
+			description: t.PalLSDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateChat
 				m.paletteFilter = ""
 				result := m.executor.ListFiles("")
 				content := result.Output
 				if !result.OK {
-					content = "Ошибка: " + result.Error
+					content = "Error: " + result.Error
 				}
-				m.sess.AddMessage(session.RoleAssistant,
-					"```\n"+content+"\n```")
+				m.sess.AddMessage(session.RoleAssistant, "```\n"+content+"\n```")
 				m.refreshViewport()
 				m.scrollToBottom = true
 				return m, nil
 			},
 		},
 		{
-			key: "git", title: "Git статус",
-			description: "Показать git status проекта",
+			key: "git", title: t.PalGit,
+			description: t.PalGitDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateChat
 				m.paletteFilter = ""
-				result := m.executor.RunCommand("git status --short 2>&1 || echo '(не git репозиторий)'")
+				result := m.executor.RunCommand("git status --short 2>&1 || echo '(not a git repo)'")
 				m.sess.AddMessage(session.RoleAssistant, "```\n"+result.Output+"\n```")
 				m.refreshViewport()
 				m.scrollToBottom = true
@@ -2188,8 +2282,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "build", title: "Go build",
-			description: "Запустить go build ./...",
+			key: "build", title: t.PalBuild,
+			description: t.PalBuildDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateThinking
 				m.paletteFilter = ""
@@ -2201,8 +2295,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "test", title: "Go test",
-			description: "Запустить go test ./...",
+			key: "test", title: t.PalTest,
+			description: t.PalTestDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateThinking
 				m.paletteFilter = ""
@@ -2214,8 +2308,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "ctx", title: "Показать использование контекста",
-			description: "Сколько токенов занимает текущая история",
+			key: "ctx", title: t.PalCtx,
+			description: t.PalCtxDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateChat
 				m.paletteFilter = ""
@@ -2224,7 +2318,7 @@ func buildPaletteItems() []paletteItem {
 					pct = m.contextUsed * 100 / m.contextLimit
 				}
 				info := fmt.Sprintf(
-					"**Контекст:** %s / %s токенов (%d%%)\n**Сообщений:** %d\n**Модель:** %s",
+					"**Context:** %s / %s tokens (%d%%)\n**Messages:** %d\n**Model:** %s",
 					formatTok(m.contextUsed), formatTok(m.contextLimit), pct,
 					len(m.sess.Messages), m.provider.Model(),
 				)
@@ -2235,8 +2329,8 @@ func buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "clear", title: "Очистить экран",
-			description: "Очистить viewport (история сохраняется)",
+			key: "clear", title: t.PalClear,
+			description: t.PalClearDesc,
 			action: func(m Model) (Model, tea.Cmd) {
 				m.currentState = stateChat
 				m.paletteFilter = ""
@@ -2287,7 +2381,7 @@ func (m Model) renderPalette() string {
 	searchPrompt := inputPromptStyle.Render("🔍 ")
 	searchVal := m.paletteFilter
 	if searchVal == "" {
-		searchVal = keyHintStyle.Render("Введи для поиска...")
+		searchVal = keyHintStyle.Render(m.tr().PaletteSearch)
 	}
 	sb.WriteString(inputContainerFocusStyle.Width(w).Render(searchPrompt+searchVal) + "\n\n")
 
@@ -2308,7 +2402,7 @@ func (m Model) renderPalette() string {
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(keyHintStyle.Render("  ↑↓ навигация  Enter выбрать  Esc закрыть"))
+	sb.WriteString(keyHintStyle.Render(m.tr().PaletteHint))
 	return sb.String()
 }
 
@@ -2407,7 +2501,7 @@ func (m Model) renderSessionLoad() string {
 	}
 
 	sb.WriteString(keyHintStyle.Render(
-		"  ↑↓ навигация  Enter загрузить  Backspace удалить  Esc назад\n\n"))
+		m.tr().SessionHint))
 
 	for i, s := range m.savedSessions {
 		// Форматируем дату

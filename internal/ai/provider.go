@@ -47,8 +47,8 @@ func New(cfg config.ProviderConfig, provider config.Provider) (Provider, error) 
 	}
 }
 
-// httpClient — общий клиент с таймаутом
-var httpClient = &http.Client{Timeout: 120 * time.Second}
+// httpClient — общий клиент с большим таймаутом для длинных ответов AI
+var httpClient = &http.Client{Timeout: 600 * time.Second} // 10 минут
 
 // ── Ollama ────────────────────────────────────────────────────────────────────
 

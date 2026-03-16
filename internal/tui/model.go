@@ -25,48 +25,206 @@ import (
 // ── i18n ──────────────────────────────────────────────────────────────────────
 
 type i18nStrings struct {
-	Placeholder        string
-	StatusReady        string
-	StatusGenerating   string
-	StatusLastTok      string
-	HintSend           string
-	HintNewline        string
-	HintCommands       string
-	HintModels         string
-	HintSave           string
-	HintLang           string
-	Thinking           string
-	LoadingModels      string
-	ModelSelectTitle   string
-	ModelSelectHint    string
-	ModelSelectCount   string
-	PullTitle          string
-	PullInterrupt      string
-	PullDone           string
-	QAHint             string
-	QASelected         string
-	ContextDropped     string
-	// Welcome
-	WelcomeMsg         string
-	// Palette search
-	PaletteSearch      string
-	PaletteHint        string
+	Placeholder      string
+	StatusReady      string
+	StatusGenerating string
+	StatusLastTok    string
+	HintSend         string
+	HintNewline      string
+	HintCommands     string
+	HintModels       string
+	HintSave         string
+	HintLang         string
+	Thinking         string
+	LoadingModels    string
+	ModelSelectTitle string
+	ModelSelectHint  string
+	ModelSelectCount string
+	PullTitle        string
+	PullInterrupt    string
+	PullDone         string
+	QAHint           string
+	QASelected       string
+	ContextDropped   string
+	WelcomeMsg       string
+	PaletteSearch    string
+	PaletteHint      string
+	SessionHint      string
 	// Palette items
-	PalCmdPalette      string; PalCmdPaletteDesc      string
-	PalModels          string; PalModelsDesc          string
-	PalPull            string; PalPullDesc            string
-	PalNew             string; PalNewDesc             string
-	PalLang            string; PalLangDesc            string
-	PalSessions        string; PalSessionsDesc        string
-	PalSave            string; PalSaveDesc            string
-	PalLS              string; PalLSDesc              string
-	PalGit             string; PalGitDesc             string
-	PalBuild           string; PalBuildDesc           string
-	PalTest            string; PalTestDesc            string
-	PalCtx             string; PalCtxDesc             string
-	PalClear           string; PalClearDesc           string
-	// Session screen
-	SessionHint        string
+	PalCmdPalette    string
+	PalCmdPaletteDesc string
+	PalModels        string
+	PalModelsDesc    string
+	PalPull          string
+	PalPullDesc      string
+	PalNew           string
+	PalNewDesc       string
+	PalLang          string
+	PalLangDesc      string
+	PalSessions      string
+	PalSessionsDesc  string
+	PalSave          string
+	PalSaveDesc      string
+	PalLS            string
+	PalLSDesc        string
+	PalGit           string
+	PalGitDesc       string
+	PalBuild         string
+	PalBuildDesc     string
+	PalTest          string
+	PalTestDesc      string
+	PalCtx           string
+	PalCtxDesc       string
+	PalClear         string
+	PalClearDesc     string
+	// Provider switcher
+	PalProvider      string
+	PalProviderDesc  string
+	ProviderTitle    string
+	ProviderHint     string
+	// Profile & Instructions
+	PalProfile          string
+	PalProfileDesc      string
+	PalInstructions     string
+	PalInstructionsDesc string
+	ProfileTitle        string
+	ProfileSaveHint     string
+	InstructTitle       string
+	InstructSaveHint    string
+}
+
+var i18nEN = i18nStrings{
+	Placeholder:      "Ask anything... (Enter to send, Shift+Enter for newline)",
+	StatusReady:      "✓ Ready — %d messages",
+	StatusGenerating: " Generating...",
+	StatusLastTok:    "last: %.1f tok/s · %d tok",
+	HintSend:         " send",
+	HintNewline:      " newline",
+	HintCommands:     " commands",
+	HintModels:       " models",
+	HintSave:         " save",
+	HintLang:         " Ctrl+P→lang",
+	Thinking:         "🧠 Thinking...",
+	LoadingModels:    "Loading...",
+	ModelSelectTitle: " TermCode — Select Model ",
+	ModelSelectHint:  "  ↑↓ navigate  Enter select  p pull new  q skip\n\n",
+	ModelSelectCount: "  Model %d/%d",
+	PullTitle:        " TermCode — Downloading Model ",
+	PullInterrupt:    " — cancel",
+	PullDone:         "Done!",
+	QAHint:           "  Space — select  ↑↓ — navigate  Enter — confirm  Esc — cancel",
+	QASelected:       "  ✓ Selected: %d",
+	ContextDropped:   "context: dropped %d old messages",
+	WelcomeMsg:       "  Welcome to TermCode 🚀\n  Ask a question or request a file change.",
+	PaletteSearch:    "Type to search...",
+	PaletteHint:      "  ↑↓ navigate  Enter select  Esc close",
+	SessionHint:      "  ↑↓ navigate  Enter load  Backspace delete  Esc back\n\n",
+	// Palette items
+	PalCmdPalette:    "Command Palette",
+	PalCmdPaletteDesc: "Open this palette",
+	PalModels:        "Switch Model",
+	PalModelsDesc:    "Show Ollama model list",
+	PalPull:          "Pull Model",
+	PalPullDesc:      "Enter model name to download",
+	PalNew:           "New Session",
+	PalNewDesc:       "Start new chat (current will be saved)",
+	PalLang:          "Switch Language / Сменить язык",
+	PalLangDesc:      "EN ↔ RU — interface and AI response language",
+	PalSessions:      "Load Session",
+	PalSessionsDesc:  "Open list of saved chats",
+	PalSave:          "Save Session",
+	PalSaveDesc:      "Save chat history to disk",
+	PalLS:            "Project Files",
+	PalLSDesc:        "Show file tree of working directory",
+	PalGit:           "Git Status",
+	PalGitDesc:       "Show git status of project",
+	PalBuild:         "Go Build",
+	PalBuildDesc:     "Run go build ./...",
+	PalTest:          "Go Test",
+	PalTestDesc:      "Run go test ./...",
+	PalCtx:           "Context Usage",
+	PalCtxDesc:       "How many tokens the current history uses",
+	PalClear:         "Clear Screen",
+	PalClearDesc:     "Clear viewport (history is kept)",
+	PalProvider:      "Switch Provider",
+	PalProviderDesc:  "Switch between Ollama / OpenAI / Anthropic / OpenRouter",
+	ProviderTitle:    " TermCode — Select Provider ",
+	ProviderHint:     "  ↑↓ navigate  Enter select  Esc cancel\n\n",
+	PalProfile:       "Edit Profile",
+	PalProfileDesc:   "Set your name, role, and background for AI context",
+	PalInstructions:  "Edit AI Instructions",
+	PalInstructionsDesc: "How AI should respond to you",
+	ProfileTitle:     " TermCode — Your Profile ",
+	ProfileSaveHint:  "  Ctrl+S save  Esc cancel",
+	InstructTitle:    " TermCode — AI Instructions ",
+	InstructSaveHint: "  Ctrl+S save  Esc cancel",
+}
+
+var i18nRU = i18nStrings{
+	Placeholder:      "Введи запрос... (Enter — отправить, Shift+Enter — перенос строки)",
+	StatusReady:      "✓ Готов — %d сообщений",
+	StatusGenerating: " Генерирую...",
+	StatusLastTok:    "последний: %.1f tok/s · %d tok",
+	HintSend:         " отправить",
+	HintNewline:      " перенос",
+	HintCommands:     " команды",
+	HintModels:       " модели",
+	HintSave:         " сохранить",
+	HintLang:         " Ctrl+P→язык",
+	Thinking:         "🧠 Думает...",
+	LoadingModels:    "Загрузка...",
+	ModelSelectTitle: " TermCode — Выбор модели ",
+	ModelSelectHint:  "  ↑↓ навигация  Enter выбрать  p скачать  q пропустить\n\n",
+	ModelSelectCount: "  Модель %d/%d",
+	PullTitle:        " TermCode — Загрузка модели ",
+	PullInterrupt:    " — прервать",
+	PullDone:         "Готово!",
+	QAHint:           "  Space — выбрать  ↑↓ — навигация  Enter — отправить  Esc — отмена",
+	QASelected:       "  ✓ Выбрано: %d",
+	ContextDropped:   "контекст: удалено %d старых сообщений",
+	WelcomeMsg:       "  Добро пожаловать в TermCode 🚀\n  Задай вопрос или попроси изменить файл проекта.",
+	PaletteSearch:    "Введи для поиска...",
+	PaletteHint:      "  ↑↓ навигация  Enter выбрать  Esc закрыть",
+	SessionHint:      "  ↑↓ навигация  Enter загрузить  Backspace удалить  Esc назад\n\n",
+	// Palette items
+	PalCmdPalette:    "Палитра команд",
+	PalCmdPaletteDesc: "Открыть эту палитру",
+	PalModels:        "Сменить модель",
+	PalModelsDesc:    "Показать список моделей Ollama",
+	PalPull:          "Скачать модель",
+	PalPullDesc:      "Ввести имя модели для загрузки",
+	PalNew:           "Новая сессия",
+	PalNewDesc:       "Начать новый диалог (текущий сохранится)",
+	PalLang:          "Сменить язык / Switch Language",
+	PalLangDesc:      "EN ↔ RU — язык интерфейса и ответов AI",
+	PalSessions:      "Загрузить сессию",
+	PalSessionsDesc:  "Открыть список сохранённых диалогов",
+	PalSave:          "Сохранить сессию",
+	PalSaveDesc:      "Сохранить историю диалога на диск",
+	PalLS:            "Список файлов проекта",
+	PalLSDesc:        "Показать дерево файлов в рабочей директории",
+	PalGit:           "Git статус",
+	PalGitDesc:       "Показать git status проекта",
+	PalBuild:         "Go build",
+	PalBuildDesc:     "Запустить go build ./...",
+	PalTest:          "Go test",
+	PalTestDesc:      "Запустить go test ./...",
+	PalCtx:           "Использование контекста",
+	PalCtxDesc:       "Сколько токенов занимает текущая история",
+	PalClear:         "Очистить экран",
+	PalClearDesc:     "Очистить viewport (история сохраняется)",
+	PalProvider:      "Сменить провайдера",
+	PalProviderDesc:  "Переключить Ollama / OpenAI / Anthropic / OpenRouter",
+	ProviderTitle:    " TermCode — Выбор провайдера ",
+	ProviderHint:     "  ↑↓ навигация  Enter выбрать  Esc отмена\n\n",
+	PalProfile:       "Редактировать профиль",
+	PalProfileDesc:   "Имя, роль и контекст о вас для AI",
+	PalInstructions:  "Инструкции для AI",
+	PalInstructionsDesc: "Как AI должен отвечать вам",
+	ProfileTitle:     " TermCode — Ваш профиль ",
+	ProfileSaveHint:  "  Ctrl+S сохранить  Esc отмена",
+	InstructTitle:    " TermCode — Инструкции для AI ",
+	InstructSaveHint: "  Ctrl+S сохранить  Esc отмена",
 }
 
 var i18nEN = i18nStrings{
@@ -108,6 +266,14 @@ var i18nEN = i18nStrings{
 	PalCtx: "Context Usage", PalCtxDesc: "How many tokens the current history uses",
 	PalClear: "Clear Screen", PalClearDesc: "Clear viewport (history is kept)",
 	SessionHint: "  ↑↓ navigate  Enter load  Backspace delete  Esc back\n\n",
+	PalProvider: "Switch Provider", PalProviderDesc: "Switch between Ollama / OpenAI / Anthropic / OpenRouter",
+	ProviderTitle: " TermCode — Select Provider ",
+	ProviderHint:  "  ↑↓ navigate  Enter select  Esc cancel",
+	PalProfile: "Edit User Profile", PalProfileDesc: "Who you are — sent to AI as context",
+	PalInstructions: "Edit AI Instructions", PalInstructionsDesc: "How AI should respond — tone, style, level",
+	ProfileTitle:   " TermCode — User Profile ",
+	ProfileSaveHint: "  Ctrl+S save  Esc cancel",
+	InstructTitle:  " TermCode — AI Instructions ",
 }
 
 var i18nRU = i18nStrings{
@@ -148,7 +314,15 @@ var i18nRU = i18nStrings{
 	PalTest: "Go test", PalTestDesc: "Запустить go test ./...",
 	PalCtx: "Использование контекста", PalCtxDesc: "Сколько токенов занимает текущая история",
 	PalClear: "Очистить экран", PalClearDesc: "Очистить viewport (история сохраняется)",
-	SessionHint: m.tr().SessionHint,
+	SessionHint: "  ↑↓ навигация  Enter загрузить  Backspace удалить  Esc назад\n\n",
+	PalProvider: "Сменить провайдера", PalProviderDesc: "Переключить Ollama / OpenAI / Anthropic / OpenRouter",
+	ProviderTitle: " TermCode — Выбор провайдера ",
+	ProviderHint:  "  ↑↓ навигация  Enter выбрать  Esc отмена",
+	PalProfile: "Редактировать профиль", PalProfileDesc: "Кто вы — отправляется AI как контекст",
+	PalInstructions: "Инструкции для AI", PalInstructionsDesc: "Как AI должен отвечать — тон, стиль, уровень",
+	ProfileTitle:   " TermCode — Профиль пользователя ",
+	ProfileSaveHint: "  Ctrl+S сохранить  Esc отмена",
+	InstructTitle:  " TermCode — Инструкции для AI ",
 }
 
 func (m *Model) tr() i18nStrings {
@@ -169,7 +343,10 @@ const (
 	statePulling
 	stateQuestion
 	statePalette
-	stateSessionLoad // загрузка сохранённой сессии
+	stateSessionLoad
+	stateProviderSelect // выбор провайдера
+	stateProfileEdit    // редактирование профиля пользователя
+	stateInstructEdit   // редактирование инструкций для AI
 )
 
 // ── Сообщения BubbleTea ───────────────────────────────────────────────────────
@@ -296,6 +473,13 @@ type Model struct {
 	sessionCursor    int
 	sessionsLoading  bool
 
+	// ── Выбор провайдера ──────────────────────────────────────────────────
+	providerCursor   int
+
+	// ── Редактор профиля/инструкций ───────────────────────────────────────
+	editInput        textarea.Model
+	editMode         int // 0=profile 1=instructions
+
 	// ── Think-блоки (reasoning) ───────────────────────────────────────────
 	thinkExpanded map[int]bool // msgIndex → раскрыт ли think-блок
 }
@@ -343,6 +527,12 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 	sp.Spinner = spinner.Dot
 	sp.Style = spinnerStyle
 
+	// Textarea для редактора профиля/инструкций
+	editTa := textarea.New()
+	editTa.ShowLineNumbers = false
+	editTa.CharLimit = 0
+	editTa.KeyMap.InsertNewline.SetKeys("shift+enter")
+
 	m := &Model{
 		cfg:          cfg,
 		provider:     provider,
@@ -351,6 +541,7 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		executor:     tools.New(workDir),
 		viewport:     vp,
 		input:        ta,
+		editInput:    editTa,
 		spinner:      sp,
 		currentState: stateModelSelect,
 		modelsLoading: true,
@@ -544,13 +735,88 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case tea.KeyDelete, tea.KeyBackspace:
-				// Backspace на сессии — удалить её
 				if m.sessionCursor < len(m.savedSessions) {
 					return m.deleteSession(m.savedSessions[m.sessionCursor])
 				}
 				return m, nil
 			}
 			return m, nil
+		}
+
+		// ── Выбор провайдера ──────────────────────────────────────────────────
+		if m.currentState == stateProviderSelect {
+			providers := []config.Provider{
+				config.ProviderOllama,
+				config.ProviderOpenAI,
+				config.ProviderAnthropic,
+				config.ProviderOpenRouter,
+			}
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				m.currentState = stateChat
+				return m, nil
+			case tea.KeyUp:
+				if m.providerCursor > 0 {
+					m.providerCursor--
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.providerCursor < len(providers)-1 {
+					m.providerCursor++
+				}
+				return m, nil
+			case tea.KeyEnter:
+				if m.providerCursor < len(providers) {
+					chosen := providers[m.providerCursor]
+					m.cfg.ActiveProvider = chosen
+					_ = m.cfg.Save()
+					pc, _ := m.cfg.ActiveProviderConfig()
+					if newProvider, err := ai.New(pc, chosen); err == nil {
+						m.provider = newProvider
+					}
+					m.currentState = stateChat
+					// Сбрасываем кеш контекста для нового провайдера
+					if chosen == config.ProviderOllama {
+						return m, fetchContextLength(pc.BaseURL, pc.Model)
+					}
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// ── Редактор профиля ──────────────────────────────────────────────────
+		if m.currentState == stateProfileEdit {
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				m.currentState = stateChat
+				return m, nil
+			case tea.KeyCtrlS:
+				m.cfg.UserProfile = strings.TrimSpace(m.editInput.Value())
+				_ = m.cfg.Save()
+				m.currentState = stateChat
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.editInput, cmd = m.editInput.Update(msg)
+			return m, cmd
+		}
+
+		// ── Редактор инструкций ───────────────────────────────────────────────
+		if m.currentState == stateInstructEdit {
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				m.currentState = stateChat
+				return m, nil
+			case tea.KeyCtrlS:
+				m.cfg.AIInstructions = strings.TrimSpace(m.editInput.Value())
+				_ = m.cfg.Save()
+				m.currentState = stateChat
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.editInput, cmd = m.editInput.Update(msg)
+			return m, cmd
 		}
 
 		// ── Клавиши в режиме вопроса от AI ───────────────────────────────────
@@ -799,8 +1065,17 @@ func (m *Model) streamAI() tea.Cmd {
 		langInstruction = "\n\nIMPORTANT: Always respond in English language."
 	}
 
+	// Собираем дополнительный контекст из профиля пользователя
+	var extraContext string
+	if m.cfg.UserProfile != "" {
+		extraContext += "\n\n## About the user\n" + m.cfg.UserProfile
+	}
+	if m.cfg.AIInstructions != "" {
+		extraContext += "\n\n## Response instructions\n" + m.cfg.AIInstructions
+	}
+
 	systemPrompt := m.cfg.SystemPrompt + "\n\n" + tools.ToolDefs() +
-		"\n\nWorking directory: " + m.workDir + langInstruction
+		"\n\nWorking directory: " + m.workDir + extraContext + langInstruction
 
 	apiMsgs, dropped := ai.TrimMessages(rawMsgs, systemPrompt, contextLength-maxTokens)
 	if dropped > 0 {
@@ -1104,19 +1379,23 @@ func (m Model) View() string {
 		return m.tr().LoadingModels
 	}
 
-	// Экран выбора модели
 	if m.currentState == stateModelSelect {
 		return m.renderModelSelect()
 	}
-
-	// Экран загрузки модели (ollama pull)
 	if m.currentState == statePulling {
 		return m.renderPullScreen()
 	}
-
-	// Экран загрузки сессий
 	if m.currentState == stateSessionLoad {
 		return m.renderSessionLoad()
+	}
+	if m.currentState == stateProviderSelect {
+		return m.renderProviderSelect()
+	}
+	if m.currentState == stateProfileEdit {
+		return m.renderProfileEdit()
+	}
+	if m.currentState == stateInstructEdit {
+		return m.renderInstructEdit()
 	}
 
 	header := m.renderHeader()
@@ -2224,8 +2503,30 @@ func (m Model) buildPaletteItems() []paletteItem {
 					m.cfg.Language = "ru"
 				}
 				_ = m.cfg.Save()
-				// Перестраиваем палитру с новым языком
 				m.paletteItems = m.buildPaletteItems()
+				return m, nil
+			},
+		},
+		{
+			key: "provider", title: t.PalProvider,
+			description: t.PalProviderDesc,
+			action: func(m Model) (Model, tea.Cmd) {
+				m.paletteFilter = ""
+				m.currentState = stateProviderSelect
+				m.providerCursor = 0
+				// Устанавливаем курсор на текущем провайдере
+				providers := []config.Provider{
+					config.ProviderOllama,
+					config.ProviderOpenAI,
+					config.ProviderAnthropic,
+					config.ProviderOpenRouter,
+				}
+				for i, p := range providers {
+					if p == m.cfg.ActiveProvider {
+						m.providerCursor = i
+						break
+					}
+				}
 				return m, nil
 			},
 		},
@@ -2336,6 +2637,50 @@ func (m Model) buildPaletteItems() []paletteItem {
 				m.paletteFilter = ""
 				m.viewport.SetContent("")
 				return m, nil
+			},
+		},
+		{
+			key: "provider", title: t.PalProvider,
+			description: t.PalProviderDesc,
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateProviderSelect
+				m.paletteFilter = ""
+				// Устанавливаем курсор на текущий провайдер
+				providers := []config.Provider{
+					config.ProviderOllama,
+					config.ProviderOpenAI,
+					config.ProviderAnthropic,
+					config.ProviderOpenRouter,
+				}
+				for i, p := range providers {
+					if p == m.cfg.ActiveProvider {
+						m.providerCursor = i
+						break
+					}
+				}
+				return m, nil
+			},
+		},
+		{
+			key: "profile", title: t.PalProfile,
+			description: t.PalProfileDesc,
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateProfileEdit
+				m.editMode = 0
+				m.paletteFilter = ""
+				m.editInput = newEditTextarea(m.cfg.UserProfile, m.width)
+				return m, textarea.Blink
+			},
+		},
+		{
+			key: "instruct", title: t.PalInstructions,
+			description: t.PalInstructionsDesc,
+			action: func(m Model) (Model, tea.Cmd) {
+				m.currentState = stateInstructEdit
+				m.editMode = 1
+				m.paletteFilter = ""
+				m.editInput = newEditTextarea(m.cfg.AIInstructions, m.width)
+				return m, textarea.Blink
 			},
 		},
 	}
@@ -2637,4 +2982,85 @@ func (m Model) toggleLastThink() Model {
 		}
 	}
 	return m
+}
+
+// ── Provider Select Screen ────────────────────────────────────────────────────
+
+func (m Model) renderProviderSelect() string {
+	var sb strings.Builder
+	t := m.tr()
+	w := m.width - 4
+
+	sb.WriteString(headerStyle.Render(t.ProviderTitle) + "\n\n")
+	sb.WriteString(keyHintStyle.Render(t.ProviderHint))
+
+	providers := []struct {
+		id   config.Provider
+		name string
+	}{
+		{config.ProviderOllama, "Ollama (local + cloud)"},
+		{config.ProviderOpenAI, "OpenAI"},
+		{config.ProviderAnthropic, "Anthropic (Claude)"},
+		{config.ProviderOpenRouter, "OpenRouter"},
+	}
+
+	for i, p := range providers {
+		pc := m.cfg.Providers[p.id]
+		active := ""
+		if p.id == m.cfg.ActiveProvider {
+			active = " ✓"
+		}
+		label := fmt.Sprintf("%s%s  [%s]", p.name, active, pc.Model)
+		if i == m.providerCursor {
+			sb.WriteString(userBubbleStyle.Width(w).Render("▶ "+label) + "\n")
+		} else {
+			sb.WriteString(keyHintStyle.Render("  "+label) + "\n")
+		}
+	}
+
+	// Показываем текущий API key (маскируем)
+	pc, _ := m.cfg.ActiveProviderConfig()
+	if pc.APIKey != "" {
+		masked := pc.APIKey[:4] + strings.Repeat("*", len(pc.APIKey)-4)
+		sb.WriteString("\n" + keyHintStyle.Render("  API Key: "+masked))
+	}
+	sb.WriteString("\n\n" + keyHintStyle.Render("  Esc — cancel"))
+	return sb.String()
+}
+
+// ── Profile Edit Screen ───────────────────────────────────────────────────────
+
+func (m Model) renderProfileEdit() string {
+	t := m.tr()
+	var sb strings.Builder
+	sb.WriteString(headerStyle.Render(t.ProfileTitle) + "\n\n")
+	sb.WriteString(keyHintStyle.Render("  Tell AI who you are — name, role, expertise.\n  This is added to every conversation.\n\n"))
+	sb.WriteString(inputContainerFocusStyle.Width(m.width-2).Render(m.editInput.View()))
+	sb.WriteString("\n\n" + keyHintStyle.Render(t.ProfileSaveHint))
+	return sb.String()
+}
+
+// ── Instruct Edit Screen ──────────────────────────────────────────────────────
+
+func (m Model) renderInstructEdit() string {
+	t := m.tr()
+	var sb strings.Builder
+	sb.WriteString(headerStyle.Render(t.InstructTitle) + "\n\n")
+	sb.WriteString(keyHintStyle.Render("  Tell AI how to respond — style, depth, format.\n  Applied to every message.\n\n"))
+	sb.WriteString(inputContainerFocusStyle.Width(m.width-2).Render(m.editInput.View()))
+	sb.WriteString("\n\n" + keyHintStyle.Render(t.InstructSaveHint))
+	return sb.String()
+}
+
+// newEditTextarea создаёт textarea для редактирования профиля/инструкций
+func newEditTextarea(content string, width int) textarea.Model {
+	ta := textarea.New()
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 0
+	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
+	ta.SetValue(content)
+	ta.Focus()
+	ta.SetWidth(width - 4)
+	ta.SetHeight(10)
+	return ta
 }

@@ -249,7 +249,8 @@ func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 64*1024)
+		// 2MB буфер — достаточно для любого ответа включая большие файлы
+		scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -257,7 +258,9 @@ func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int
 			}
 			var chunk ollamaStreamResponse
 			if err := json.Unmarshal([]byte(line), &chunk); err != nil {
-				continue
+				// Логируем ошибку парсинга но продолжаем
+				ch <- StreamChunk{Err: fmt.Errorf("ollama parse: %w (line: %.100s)", err, line)}
+				return
 			}
 			ch <- StreamChunk{Content: chunk.Message.Content, Done: chunk.Done}
 			if chunk.Done {
@@ -265,7 +268,7 @@ func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- StreamChunk{Err: err}
+			ch <- StreamChunk{Err: fmt.Errorf("ollama stream: %w", err)}
 		}
 	}()
 
@@ -354,7 +357,7 @@ func (p *OpenAIProvider) Stream(messages []Message, system string, maxTokens int
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 64*1024)
+		scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {
@@ -464,7 +467,7 @@ func (p *AnthropicProvider) Stream(messages []Message, system string, maxTokens 
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 64*1024)
+		scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {

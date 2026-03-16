@@ -1397,31 +1397,45 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
-	// Линии и строки одинаковой ширины = m.width
+	// Используем реальную ширину терминала
+	lineW := m.width
+	if lineW < 10 {
+		lineW = 10
+	}
+
 	divider := lipgloss.NewStyle().
 		Foreground(colorPrimary).
-		Render(strings.Repeat("─", m.width))
+		Render(strings.Repeat("─", lineW))
 	sb.WriteString(divider + "\n")
 
-	selectedStyle := lipgloss.NewStyle().
+	hlBase := lipgloss.NewStyle().
 		Background(colorPrimary).
 		Foreground(lipgloss.Color("#FFFFFF")).
-		Bold(true).
-		Width(m.width).
-		PaddingLeft(2)
+		Bold(true)
 
 	for i := start; i < end; i++ {
 		model := m.ollamaModels[i]
-		// Обрезаем если не влезает
-		maxNameW := m.width - 6
-		if len([]rune(model)) > maxNameW {
-			runes := []rune(model)
-			model = string(runes[:maxNameW-1]) + "…"
-		}
+		prefix := "  "
 		if i == m.modelCursor {
-			sb.WriteString(selectedStyle.Render("▶ "+model) + "\n")
+			prefix = "▶ "
+		}
+		// Собираем строку и дополняем пробелами до lineW
+		content := prefix + model
+		contentRunes := []rune(content)
+		if len(contentRunes) > lineW {
+			contentRunes = append([]rune(prefix), []rune(model)[:lineW-len([]rune(prefix))-1]...)
+			contentRunes = append(contentRunes, '…')
+		}
+		// Дополняем пробелами до полной ширины
+		for len(contentRunes) < lineW {
+			contentRunes = append(contentRunes, ' ')
+		}
+		line := string(contentRunes)
+
+		if i == m.modelCursor {
+			sb.WriteString(hlBase.Render(line) + "\n")
 		} else {
-			sb.WriteString(fmt.Sprintf("  %s\n", model))
+			sb.WriteString(line + "\n")
 		}
 	}
 

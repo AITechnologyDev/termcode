@@ -116,8 +116,7 @@ var (
 
 	// ── Разделитель ──────────────────────────────────────────────────────────
 	dividerStyle = lipgloss.NewStyle().
-			Foreground(colorBorder).
-			Bold(true)
+			Foreground(colorBorder)
 
 	// ── Код-блоки ────────────────────────────────────────────────────────────
 	codeBlockStyle = lipgloss.NewStyle().

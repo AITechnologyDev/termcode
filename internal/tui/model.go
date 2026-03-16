@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/AITechnologyDev/termcode/internal/ai"
 	"github.com/AITechnologyDev/termcode/internal/config"
@@ -51,32 +53,32 @@ type i18nStrings struct {
 	PaletteHint      string
 	SessionHint      string
 	// Palette items
-	PalCmdPalette    string
+	PalCmdPalette     string
 	PalCmdPaletteDesc string
-	PalModels        string
-	PalModelsDesc    string
-	PalPull          string
-	PalPullDesc      string
-	PalNew           string
-	PalNewDesc       string
-	PalLang          string
-	PalLangDesc      string
-	PalSessions      string
-	PalSessionsDesc  string
-	PalSave          string
-	PalSaveDesc      string
-	PalLS            string
-	PalLSDesc        string
-	PalGit           string
-	PalGitDesc       string
-	PalBuild         string
-	PalBuildDesc     string
-	PalTest          string
-	PalTestDesc      string
-	PalCtx           string
-	PalCtxDesc       string
-	PalClear         string
-	PalClearDesc     string
+	PalModels         string
+	PalModelsDesc     string
+	PalPull           string
+	PalPullDesc       string
+	PalNew            string
+	PalNewDesc        string
+	PalLang           string
+	PalLangDesc       string
+	PalSessions       string
+	PalSessionsDesc   string
+	PalSave           string
+	PalSaveDesc       string
+	PalLS             string
+	PalLSDesc         string
+	PalGit            string
+	PalGitDesc        string
+	PalBuild          string
+	PalBuildDesc      string
+	PalTest           string
+	PalTestDesc       string
+	PalCtx            string
+	PalCtxDesc        string
+	PalClear          string
+	PalClearDesc      string
 	// Provider switcher
 	PalProvider      string
 	PalProviderDesc  string
@@ -93,19 +95,19 @@ type i18nStrings struct {
 	InstructSaveHint    string
 	UserLabel           string
 	// Session list
-	SessionsTitle       string
-	SessionsEmpty       string
-	SessionsCount       string
-	SessionsMsgs        string
-	SessionsLoading     string
+	SessionsTitle   string
+	SessionsEmpty   string
+	SessionsCount   string
+	SessionsMsgs    string
+	SessionsLoading string
 	// Palette
-	PaletteTitle        string
-	PaletteEmpty        string
+	PaletteTitle string
+	PaletteEmpty string
 	// formatAge
-	AgeJustNow          string
-	AgeMin              string
-	AgeHour             string
-	AgeDay              string
+	AgeJustNow string
+	AgeMin     string
+	AgeHour    string
+	AgeDay     string
 }
 
 var i18nEN = i18nStrings{
@@ -135,56 +137,56 @@ var i18nEN = i18nStrings{
 	PaletteHint:      "  ↑↓ navigate  Enter select  Esc close",
 	SessionHint:      "  ↑↓ navigate  Enter load  Backspace delete  Esc back\n\n",
 	// Palette items
-	PalCmdPalette:    "Command Palette",
+	PalCmdPalette:     "Command Palette",
 	PalCmdPaletteDesc: "Open this palette",
-	PalModels:        "Switch Model",
-	PalModelsDesc:    "Show Ollama model list",
-	PalPull:          "Pull Model",
-	PalPullDesc:      "Enter model name to download",
-	PalNew:           "New Session",
-	PalNewDesc:       "Start new chat (current will be saved)",
-	PalLang:          "Switch Language / Сменить язык",
-	PalLangDesc:      "EN ↔ RU — interface and AI response language",
-	PalSessions:      "Load Session",
-	PalSessionsDesc:  "Open list of saved chats",
-	PalSave:          "Save Session",
-	PalSaveDesc:      "Save chat history to disk",
-	PalLS:            "Project Files",
-	PalLSDesc:        "Show file tree of working directory",
-	PalGit:           "Git Status",
-	PalGitDesc:       "Show git status of project",
-	PalBuild:         "Go Build",
-	PalBuildDesc:     "Run go build ./...",
-	PalTest:          "Go Test",
-	PalTestDesc:      "Run go test ./...",
-	PalCtx:           "Context Usage",
-	PalCtxDesc:       "How many tokens the current history uses",
-	PalClear:         "Clear Screen",
-	PalClearDesc:     "Clear viewport (history is kept)",
-	PalProvider:      "Switch Provider",
-	PalProviderDesc:  "Switch between Ollama / OpenAI / Anthropic / OpenRouter",
-	ProviderTitle:    " TermCode — Select Provider ",
-	ProviderHint:     "  ↑↓ navigate  Enter select  Esc cancel\n\n",
-	PalProfile:       "Edit Profile",
-	PalProfileDesc:   "Set your name, role, and background for AI context",
-	PalInstructions:  "Edit AI Instructions",
+	PalModels:         "Switch Model",
+	PalModelsDesc:     "Show Ollama model list",
+	PalPull:           "Pull Model",
+	PalPullDesc:       "Enter model name to download",
+	PalNew:            "New Session",
+	PalNewDesc:        "Start new chat (current will be saved)",
+	PalLang:           "Switch Language / Сменить язык",
+	PalLangDesc:       "EN ↔ RU — interface and AI response language",
+	PalSessions:       "Load Session",
+	PalSessionsDesc:   "Open list of saved chats",
+	PalSave:           "Save Session",
+	PalSaveDesc:       "Save chat history to disk",
+	PalLS:             "Project Files",
+	PalLSDesc:         "Show file tree of working directory",
+	PalGit:            "Git Status",
+	PalGitDesc:        "Show git status of project",
+	PalBuild:          "Go Build",
+	PalBuildDesc:      "Run go build ./...",
+	PalTest:           "Go Test",
+	PalTestDesc:       "Run go test ./...",
+	PalCtx:            "Context Usage",
+	PalCtxDesc:        "How many tokens the current history uses",
+	PalClear:          "Clear Screen",
+	PalClearDesc:      "Clear viewport (history is kept)",
+	PalProvider:       "Switch Provider",
+	PalProviderDesc:   "Switch between Ollama / OpenAI / Anthropic / OpenRouter",
+	ProviderTitle:     " TermCode — Select Provider ",
+	ProviderHint:      "  ↑↓ navigate  Enter select  Esc cancel\n\n",
+	PalProfile:        "Edit Profile",
+	PalProfileDesc:    "Set your name, role, and background for AI context",
+	PalInstructions:   "Edit AI Instructions",
 	PalInstructionsDesc: "How AI should respond to you",
-	ProfileTitle:     " TermCode — Your Profile ",
-	ProfileSaveHint:  "  Ctrl+S save  Esc cancel",
-	InstructTitle:    " TermCode — AI Instructions ",
-	InstructSaveHint: "  Ctrl+S save  Esc cancel",
-	UserLabel:        "▶ You",
-	SessionsTitle:    " TermCode — Sessions ",
-	SessionsEmpty:    "  No saved sessions.\n\n",
-	SessionsCount:    "\n  %d sessions saved",
-	SessionsMsgs:     "%d msgs",
-	SessionsLoading:  "  %s Loading sessions...\n",
-	PaletteTitle:     " ⌘ Command Palette ",
-	PaletteEmpty:     "  Nothing found",
-	AgeJustNow:       "just now",
-	AgeMin:           "%dm ago",
-	AgeHour:          "%dh ago",
-	AgeDay:           "%dd ago",
+	ProfileTitle:      " TermCode — Your Profile ",
+	ProfileSaveHint:   "  Ctrl+S save  Esc cancel",
+	InstructTitle:     " TermCode — AI Instructions ",
+	InstructSaveHint:  "  Ctrl+S save  Esc cancel",
+	UserLabel:         "▶ You",
+	SessionsTitle:     " TermCode — Sessions ",
+	SessionsEmpty:     "  No saved sessions.\n\n",
+	SessionsCount:     "\n  %d sessions saved",
+	SessionsMsgs:      "%d msgs",
+	SessionsLoading:   "  %s Loading sessions...\n",
+	PaletteTitle:      " ⌘ Command Palette ",
+	PaletteEmpty:      "  Nothing found",
+	AgeJustNow:        "just now",
+	AgeMin:            "%dm ago",
+	AgeHour:           "%dh ago",
+	AgeDay:            "%dd ago",
 }
 
 var i18nRU = i18nStrings{
@@ -214,56 +216,56 @@ var i18nRU = i18nStrings{
 	PaletteHint:      "  ↑↓ навигация  Enter выбрать  Esc закрыть",
 	SessionHint:      "  ↑↓ навигация  Enter загрузить  Backspace удалить  Esc назад\n\n",
 	// Palette items
-	PalCmdPalette:    "Палитра команд",
+	PalCmdPalette:     "Палитра команд",
 	PalCmdPaletteDesc: "Открыть эту палитру",
-	PalModels:        "Сменить модель",
-	PalModelsDesc:    "Показать список моделей Ollama",
-	PalPull:          "Скачать модель",
-	PalPullDesc:      "Ввести имя модели для загрузки",
-	PalNew:           "Новая сессия",
-	PalNewDesc:       "Начать новый диалог (текущий сохранится)",
-	PalLang:          "Сменить язык / Switch Language",
-	PalLangDesc:      "EN ↔ RU — язык интерфейса и ответов AI",
-	PalSessions:      "Загрузить сессию",
-	PalSessionsDesc:  "Открыть список сохранённых диалогов",
-	PalSave:          "Сохранить сессию",
-	PalSaveDesc:      "Сохранить историю диалога на диск",
-	PalLS:            "Список файлов проекта",
-	PalLSDesc:        "Показать дерево файлов в рабочей директории",
-	PalGit:           "Git статус",
-	PalGitDesc:       "Показать git status проекта",
-	PalBuild:         "Go build",
-	PalBuildDesc:     "Запустить go build ./...",
-	PalTest:          "Go test",
-	PalTestDesc:      "Запустить go test ./...",
-	PalCtx:           "Использование контекста",
-	PalCtxDesc:       "Сколько токенов занимает текущая история",
-	PalClear:         "Очистить экран",
-	PalClearDesc:     "Очистить viewport (история сохраняется)",
-	PalProvider:      "Сменить провайдера",
-	PalProviderDesc:  "Переключить Ollama / OpenAI / Anthropic / OpenRouter",
-	ProviderTitle:    " TermCode — Выбор провайдера ",
-	ProviderHint:     "  ↑↓ навигация  Enter выбрать  Esc отмена\n\n",
-	PalProfile:       "Редактировать профиль",
-	PalProfileDesc:   "Имя, роль и контекст о вас для AI",
-	PalInstructions:  "Инструкции для AI",
+	PalModels:         "Сменить модель",
+	PalModelsDesc:     "Показать список моделей Ollama",
+	PalPull:           "Скачать модель",
+	PalPullDesc:       "Ввести имя модели для загрузки",
+	PalNew:            "Новая сессия",
+	PalNewDesc:        "Начать новый диалог (текущий сохранится)",
+	PalLang:           "Сменить язык / Switch Language",
+	PalLangDesc:       "EN ↔ RU — язык интерфейса и ответов AI",
+	PalSessions:       "Загрузить сессию",
+	PalSessionsDesc:   "Открыть список сохранённых диалогов",
+	PalSave:           "Сохранить сессию",
+	PalSaveDesc:       "Сохранить историю диалога на диск",
+	PalLS:             "Список файлов проекта",
+	PalLSDesc:         "Показать дерево файлов в рабочей директории",
+	PalGit:            "Git статус",
+	PalGitDesc:        "Показать git status проекта",
+	PalBuild:          "Go build",
+	PalBuildDesc:      "Запустить go build ./...",
+	PalTest:           "Go test",
+	PalTestDesc:       "Запустить go test ./...",
+	PalCtx:            "Использование контекста",
+	PalCtxDesc:        "Сколько токенов занимает текущая история",
+	PalClear:          "Очистить экран",
+	PalClearDesc:      "Очистить viewport (история сохраняется)",
+	PalProvider:       "Сменить провайдера",
+	PalProviderDesc:   "Переключить Ollama / OpenAI / Anthropic / OpenRouter",
+	ProviderTitle:     " TermCode — Выбор провайдера ",
+	ProviderHint:      "  ↑↓ навигация  Enter выбрать  Esc отмена\n\n",
+	PalProfile:        "Редактировать профиль",
+	PalProfileDesc:    "Имя, роль и контекст о вас для AI",
+	PalInstructions:   "Инструкции для AI",
 	PalInstructionsDesc: "Как AI должен отвечать вам",
-	ProfileTitle:     " TermCode — Ваш профиль ",
-	ProfileSaveHint:  "  Ctrl+S сохранить  Esc отмена",
-	InstructTitle:    " TermCode — Инструкции для AI ",
-	InstructSaveHint: "  Ctrl+S сохранить  Esc отмена",
-	UserLabel:        "▶ Ты",
-	SessionsTitle:    " TermCode — Сессии ",
-	SessionsEmpty:    "  Нет сохранённых сессий.\n\n",
-	SessionsCount:    "\n  %d сессий сохранено",
-	SessionsMsgs:     "%d сообщ.",
-	SessionsLoading:  "  %s Загружаем сессии...\n",
-	PaletteTitle:     " ⌘ Палитра команд ",
-	PaletteEmpty:     "  Ничего не найдено",
-	AgeJustNow:       "только что",
-	AgeMin:           "%dм назад",
-	AgeHour:          "%dч назад",
-	AgeDay:           "%dд назад",
+	ProfileTitle:      " TermCode — Ваш профиль ",
+	ProfileSaveHint:   "  Ctrl+S сохранить  Esc отмена",
+	InstructTitle:     " TermCode — Инструкции для AI ",
+	InstructSaveHint:  "  Ctrl+S сохранить  Esc отмена",
+	UserLabel:         "▶ Ты",
+	SessionsTitle:     " TermCode — Сессии ",
+	SessionsEmpty:     "  Нет сохранённых сессий.\n\n",
+	SessionsCount:     "\n  %d сессий сохранено",
+	SessionsMsgs:      "%d сообщ.",
+	SessionsLoading:   "  %s Загружаем сессии...\n",
+	PaletteTitle:      " ⌘ Палитра команд ",
+	PaletteEmpty:      "  Ничего не найдено",
+	AgeJustNow:        "только что",
+	AgeMin:            "%dм назад",
+	AgeHour:           "%dч назад",
+	AgeDay:            "%dд назад",
 }
 
 func (m *Model) tr() i18nStrings {
@@ -372,6 +374,9 @@ type Model struct {
 	// Размеры терминала
 	width  int
 	height int
+	// Пиксельные размеры (для точного позиционирования)
+	screenWidthPx  int
+	screenHeightPx int
 
 	// Признак что viewport нужно прокрутить вниз
 	scrollToBottom bool
@@ -474,18 +479,27 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 	editTa.CharLimit = 0
 	editTa.KeyMap.InsertNewline.SetKeys("shift+enter")
 
+	// Получаем пиксельные размеры при старте (если доступно)
+	widthPx, heightPx := 0, 0
+	if ws, err := getTermSize(); err == nil {
+		widthPx = int(ws.Xpixel)
+		heightPx = int(ws.Ypixel)
+	}
+
 	m := &Model{
-		cfg:          cfg,
-		provider:     provider,
-		sess:         sess,
-		workDir:      workDir,
-		executor:     tools.New(workDir),
-		viewport:     vp,
-		input:        ta,
-		editInput:    editTa,
-		spinner:      sp,
-		currentState: stateModelSelect,
-		modelsLoading: true,
+		cfg:            cfg,
+		provider:       provider,
+		sess:           sess,
+		workDir:        workDir,
+		executor:       tools.New(workDir),
+		viewport:       vp,
+		input:          ta,
+		editInput:      editTa,
+		spinner:        sp,
+		currentState:   stateModelSelect,
+		modelsLoading:  true,
+		screenWidthPx:  widthPx,
+		screenHeightPx: heightPx,
 	}
 	m.paletteItems = m.buildPaletteItems()
 	m.thinkExpanded = make(map[int]bool)
@@ -521,6 +535,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Обновляем пиксельные размеры (если доступны)
+		if ws, err := getTermSize(); err == nil {
+			m.screenWidthPx = int(ws.Xpixel)
+			m.screenHeightPx = int(ws.Ypixel)
+		}
 		m = m.resize()
 
 	// ── Список моделей получен ────────────────────────────────────────────────
@@ -1364,9 +1383,9 @@ func (m Model) View() string {
 func (m Model) renderModelSelect() string {
 	var sb strings.Builder
 	t := m.tr()
-	w := m.width - 4
-	if w < 20 {
-		w = 20
+	width := m.width
+	if width < 20 {
+		width = 20
 	}
 
 	title := headerStyle.Render(t.ModelSelectTitle)
@@ -1401,49 +1420,90 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
-	lineW := m.width
-	if lineW < 10 {
-		lineW = 10
+	// Твой фикс — 2 пробела + линия
+	dividerRunes := make([]rune, width)
+	for i := 0; i < width; i++ {
+		if i < 2 {
+			dividerRunes[i] = ' '
+		} else {
+			dividerRunes[i] = '─'
+		}
 	}
+	//dividerLine := string(dividerRunes)
 
-	// Верхний разделитель с отступом
-	divider := dividerStyle.Width(lineW-2).Render(strings.Repeat("─", lineW-2))
-	sb.WriteString("  " + divider + "\n")
-
-	hlBase := lipgloss.NewStyle().
+	primaryColor := lipgloss.NewStyle().Foreground(colorPrimary)
+	mutedColor   := lipgloss.NewStyle().Foreground(colorMuted)
+	hlStyle      := lipgloss.NewStyle().
 		Background(colorPrimary).
 		Foreground(lipgloss.Color("#FFFFFF")).
 		Bold(true)
 
+	sb.WriteString("  " + mutedColor.Render("Available models") + "\n")
+
+	// Рамка вокруг списка — с теми же 2 пробелами слева
+	// boxW = ширина внутри рамки
+	boxW := width - 4 // 2 пробела + │ слева + │ справа
+	if boxW < 4 {
+		boxW = 4
+	}
+	topLine    := "  ╭" + strings.Repeat("─", boxW) + "╮"
+	bottomLine := "  ╰" + strings.Repeat("─", boxW) + "╯"
+
+	sb.WriteString(primaryColor.Render(topLine) + "\n")
+
+	pc, _ := m.cfg.ActiveProviderConfig()
+
 	for i := start; i < end; i++ {
 		model := m.ollamaModels[i]
+
+		icon := "💻 "
+		if strings.HasSuffix(model, ":cloud") {
+			icon = "☁  "
+		}
+
+		active := ""
+		if model == pc.Model {
+			active = " ✓"
+		}
+
 		prefix := "  "
 		if i == m.modelCursor {
 			prefix = "▶ "
 		}
-		content := prefix + model
+
+		content := prefix + icon + model + active
 		contentRunes := []rune(content)
-		if len(contentRunes) > lineW {
-			contentRunes = append([]rune(prefix), []rune(model)[:lineW-len([]rune(prefix))-1]...)
+		if len(contentRunes) > boxW {
+			prefR := []rune(prefix + icon)
+			maxM := boxW - len(prefR) - len([]rune(active)) - 1
+			if maxM < 1 {
+				maxM = 1
+			}
+			contentRunes = append(prefR, []rune(model)[:maxM]...)
 			contentRunes = append(contentRunes, '…')
+			contentRunes = append(contentRunes, []rune(active)...)
 		}
-		for len(contentRunes) < lineW {
+		for len(contentRunes) < boxW {
 			contentRunes = append(contentRunes, ' ')
 		}
-		line := string(contentRunes)
+		inner := string(contentRunes)
 
 		if i == m.modelCursor {
-			sb.WriteString(hlBase.Render(line) + "\n")
+			sb.WriteString(primaryColor.Render("  │") +
+				hlStyle.Render(inner) +
+				primaryColor.Render("│") + "\n")
 		} else {
-			sb.WriteString(line + "\n")
+			sb.WriteString(primaryColor.Render("  │") +
+				inner +
+				primaryColor.Render("│") + "\n")
 		}
 	}
 
-	// Нижний разделитель с таким же отступом
-	sb.WriteString("  " + divider + "\n\n")
+	sb.WriteString(primaryColor.Render(bottomLine) + "\n\n")
 	sb.WriteString(keyHintStyle.Render(fmt.Sprintf(t.ModelSelectCount, m.modelCursor+1, len(m.ollamaModels))))
 	return sb.String()
 }
+
 
 // renderPullScreen — экран прогресса ollama pull
 func (m Model) renderPullScreen() string {
@@ -1621,7 +1681,7 @@ func (m Model) renderHints() string {
 func (m Model) resize() Model {
 	headerH := 1
 	statusH := 1
-	hintsH  := 1
+	hintsH := 1
 	dividerH := 1
 
 	// Высота зоны ввода зависит от режима
@@ -1846,8 +1906,6 @@ func renderInlineBold(line string) string {
 	}
 	return result
 }
-
-
 
 // ── Ollama: список моделей ────────────────────────────────────────────────────
 
@@ -2413,28 +2471,6 @@ func (m Model) buildPaletteItems() []paletteItem {
 			},
 		},
 		{
-			key: "provider", title: t.PalProvider,
-			description: t.PalProviderDesc,
-			action: func(m Model) (Model, tea.Cmd) {
-				m.currentState = stateProviderSelect
-				m.paletteFilter = ""
-				// Устанавливаем курсор на текущий провайдер
-				providers := []config.Provider{
-					config.ProviderOllama,
-					config.ProviderOpenAI,
-					config.ProviderAnthropic,
-					config.ProviderOpenRouter,
-				}
-				for i, p := range providers {
-					if p == m.cfg.ActiveProvider {
-						m.providerCursor = i
-						break
-					}
-				}
-				return m, nil
-			},
-		},
-		{
 			key: "profile", title: t.PalProfile,
 			description: t.PalProfileDesc,
 			action: func(m Model) (Model, tea.Cmd) {
@@ -2837,4 +2873,29 @@ func newEditTextarea(content string, width int) textarea.Model {
 	ta.SetWidth(width - 4)
 	ta.SetHeight(10)
 	return ta
+}
+
+// ── Новая функция: получение размеров терминала в пикселях (для Termux) ──────
+
+// winsize соответствует структуре из syscall.TIOCGWINSZ
+type winsize struct {
+	Row    uint16
+	Col    uint16
+	Xpixel uint16
+	Ypixel uint16
+}
+
+// getTermSize возвращает размеры терминала через системный вызов TIOCGWINSZ.
+// В Termux v0.118.0+ поля Xpixel и Ypixel заполняются корректно.
+func getTermSize() (*winsize, error) {
+	ws := &winsize{}
+	// Используем stdout (fd 1)
+	ret, _, err := syscall.Syscall(syscall.SYS_IOCTL,
+		uintptr(syscall.Stdout),
+		uintptr(syscall.TIOCGWINSZ),
+		uintptr(unsafe.Pointer(ws)))
+	if int(ret) == -1 {
+		return nil, err
+	}
+	return ws, nil
 }

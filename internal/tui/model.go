@@ -1397,7 +1397,7 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
-	// Горизонтальные линии на всю ширину терминала
+	// Линии и строки одинаковой ширины = m.width
 	divider := lipgloss.NewStyle().
 		Foreground(colorPrimary).
 		Render(strings.Repeat("─", m.width))
@@ -1407,14 +1407,16 @@ func (m Model) renderModelSelect() string {
 		Background(colorPrimary).
 		Foreground(lipgloss.Color("#FFFFFF")).
 		Bold(true).
-		Width(w).
-		PaddingLeft(1)
+		Width(m.width).
+		PaddingLeft(2)
 
 	for i := start; i < end; i++ {
 		model := m.ollamaModels[i]
-		maxNameW := w - 4
-		if len(model) > maxNameW {
-			model = model[:maxNameW-1] + "…"
+		// Обрезаем если не влезает
+		maxNameW := m.width - 6
+		if len([]rune(model)) > maxNameW {
+			runes := []rune(model)
+			model = string(runes[:maxNameW-1]) + "…"
 		}
 		if i == m.modelCursor {
 			sb.WriteString(selectedStyle.Render("▶ "+model) + "\n")

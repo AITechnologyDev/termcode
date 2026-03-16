@@ -92,6 +92,20 @@ type i18nStrings struct {
 	InstructTitle       string
 	InstructSaveHint    string
 	UserLabel           string
+	// Session list
+	SessionsTitle       string
+	SessionsEmpty       string
+	SessionsCount       string
+	SessionsMsgs        string
+	SessionsLoading     string
+	// Palette
+	PaletteTitle        string
+	PaletteEmpty        string
+	// formatAge
+	AgeJustNow          string
+	AgeMin              string
+	AgeHour             string
+	AgeDay              string
 }
 
 var i18nEN = i18nStrings{
@@ -160,6 +174,17 @@ var i18nEN = i18nStrings{
 	InstructTitle:    " TermCode — AI Instructions ",
 	InstructSaveHint: "  Ctrl+S save  Esc cancel",
 	UserLabel:        "▶ You",
+	SessionsTitle:    " TermCode — Sessions ",
+	SessionsEmpty:    m.tr().SessionsEmpty,
+	SessionsCount:    m.tr().SessionsCount,
+	SessionsMsgs:     m.tr().SessionsMsgs,
+	SessionsLoading:  m.tr().SessionsLoading,
+	PaletteTitle:     " ⌘ Command Palette ",
+	PaletteEmpty:     "  Nothing found",
+	AgeJustNow:       "just now",
+	AgeMin:           "%dm ago",
+	AgeHour:          "%dh ago",
+	AgeDay:           "%dd ago",
 }
 
 var i18nRU = i18nStrings{
@@ -228,6 +253,17 @@ var i18nRU = i18nStrings{
 	InstructTitle:    " TermCode — Инструкции для AI ",
 	InstructSaveHint: "  Ctrl+S сохранить  Esc отмена",
 	UserLabel:        "▶ Ты",
+	SessionsTitle:    " TermCode — Сессии ",
+	SessionsEmpty:    "  Нет сохранённых сессий.\n\n",
+	SessionsCount:    "\n  %d сессий сохранено",
+	SessionsMsgs:     "%d сообщ.",
+	SessionsLoading:  "  %s Загружаем сессии...\n",
+	PaletteTitle:     " ⌘ Палитра команд ",
+	PaletteEmpty:     "  Ничего не найдено",
+	AgeJustNow:       "только что",
+	AgeMin:           "%dм назад",
+	AgeHour:          "%dч назад",
+	AgeDay:           "%dд назад",
 }
 
 func (m *Model) tr() i18nStrings {
@@ -403,11 +439,11 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 	// Создаём провайдера
 	pc, ok := cfg.ActiveProviderConfig()
 	if !ok {
-		return nil, fmt.Errorf("конфиг провайдера %q не найден", cfg.ActiveProvider)
+		return nil, fmt.Errorf("provider config %q not found", cfg.ActiveProvider)
 	}
 	provider, err := ai.New(pc, cfg.ActiveProvider)
 	if err != nil {
-		return nil, fmt.Errorf("создание провайдера: %w", err)
+		return nil, fmt.Errorf("create provider: %w", err)
 	}
 
 	// Создаём сессию
@@ -492,7 +528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelsLoading = false
 		if msg.err != nil {
 			// Ollama недоступна — сразу идём в чат
-			m.errMsg = "Ollama недоступна: " + msg.err.Error()
+			m.errMsg = "Ollama unavailable: " + msg.err.Error()
 			m.currentState = stateChat
 		} else if len(msg.models) == 0 {
 			m.currentState = stateChat
@@ -514,7 +550,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pullProgressMsg:
 		if msg.err != nil {
 			m.currentState = stateChat
-			m.errMsg = "pull ошибка: " + msg.err.Error()
+			m.errMsg = "pull error: " + msg.err.Error()
 			return m, nil
 		}
 		m.pullStatus = msg.status
@@ -558,7 +594,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// 'p' — pull новой модели: ввод имени
 				if string(msg.Runes) == "p" {
 					m.currentState = stateChat
-					m.input.SetValue("Введи имя модели для pull (например: qwen3:8b): ")
+					m.input.SetValue("Enter model name for pull (e.g. qwen3:8b): ")
 					return m, nil
 				}
 				// 'q' — пропустить выбор
@@ -805,7 +841,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyCtrlS:
 			if err := m.sess.Save(); err != nil {
-				m.errMsg = "Ошибка сохранения: " + err.Error()
+				m.errMsg = "Save error: " + err.Error()
 			}
 			return m, nil
 		case tea.KeyCtrlP:
@@ -1039,7 +1075,7 @@ type streamReaderMsg struct {
 func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.currentState = stateChat
-		m.errMsg = "Ошибка AI: " + msg.err.Error()
+		m.errMsg = "AI error: " + msg.err.Error()
 		m.streaming = ""
 		m.refreshViewport()
 		return m, nil
@@ -1168,20 +1204,6 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 			result := executor.Dispatch(call.Tool, call.Params)
 			return toolDoneMsg{call: call, result: result}
 		}
-	}
-
-	// Проверяем вопрос от AI
-	if question, options := parseQuestionBlock(cleanText); question != "" {
-		m.question = question
-		m.questionOptions = options
-		m.questionCursor = 0
-		m.questionSelected = make(map[int]bool)
-		m.currentState = stateQuestion
-		m.input.Reset()
-		m = m.resize() // пересчитать высоту viewport под Q&A панель
-		m.refreshViewport()
-		m.scrollToBottom = true
-		return m, nil
 	}
 
 	m.currentState = stateChat
@@ -1361,20 +1383,11 @@ func (m Model) renderModelSelect() string {
 
 	sb.WriteString(keyHintStyle.Render(t.ModelSelectHint))
 
-	// Рамка вокруг списка
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorPrimary).
-		Width(w).
-		Padding(0, 1)
-
-	var listSb strings.Builder
-	maxVisible := m.height - 10
+	maxVisible := m.height - 8
 	if maxVisible < 3 {
 		maxVisible = 3
 	}
 
-	// Скроллинг — показываем окно вокруг курсора
 	start := 0
 	if m.modelCursor >= maxVisible {
 		start = m.modelCursor - maxVisible + 1
@@ -1384,34 +1397,31 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
-	// Стиль выбранной строки — без border, просто цвет фона
+	// Простая рамка — только горизонтальные линии
+	divider := keyHintStyle.Render(strings.Repeat("─", w))
+	sb.WriteString(divider + "\n")
+
 	selectedStyle := lipgloss.NewStyle().
 		Background(colorPrimary).
 		Foreground(lipgloss.Color("#FFFFFF")).
 		Bold(true).
-		Width(w - 2).
+		Width(w).
 		PaddingLeft(1)
-
-	normalStyle := lipgloss.NewStyle().
-		Foreground(colorText).
-		Width(w - 2).
-		PaddingLeft(2)
 
 	for i := start; i < end; i++ {
 		model := m.ollamaModels[i]
-		maxNameW := w - 6
+		maxNameW := w - 4
 		if len(model) > maxNameW {
 			model = model[:maxNameW-1] + "…"
 		}
 		if i == m.modelCursor {
-			listSb.WriteString(selectedStyle.Render("▶ " + model) + "\n")
+			sb.WriteString(selectedStyle.Render("▶ "+model) + "\n")
 		} else {
-			listSb.WriteString(normalStyle.Render(model) + "\n")
+			sb.WriteString(fmt.Sprintf("  %s\n", model))
 		}
 	}
 
-	sb.WriteString(boxStyle.Render(strings.TrimRight(listSb.String(), "\n")))
-	sb.WriteString("\n\n")
+	sb.WriteString(divider + "\n\n")
 	sb.WriteString(keyHintStyle.Render(fmt.Sprintf(t.ModelSelectCount, m.modelCursor+1, len(m.ollamaModels))))
 	return sb.String()
 }
@@ -1424,9 +1434,9 @@ func (m Model) renderPullScreen() string {
 	sb.WriteString(title + "\n\n")
 
 	model := assistantLabelStyle.Render(m.pullModelName)
-	sb.WriteString(fmt.Sprintf("  Скачиваем: %s\n\n", model))
+	sb.WriteString(fmt.Sprintf("  Downloading: %s\n\n", model))
 
-	sb.WriteString(fmt.Sprintf("  Статус: %s\n\n", m.pullStatus))
+	sb.WriteString(fmt.Sprintf("  Status: %s\n\n", m.pullStatus))
 
 	if m.pullTotal > 0 {
 		pct := float64(m.pullCompleted) / float64(m.pullTotal)
@@ -1446,7 +1456,7 @@ func (m Model) renderPullScreen() string {
 		sb.WriteString(fmt.Sprintf("  [%s] %.0f%%\n", bar, pct*100))
 		sb.WriteString(fmt.Sprintf("  %.1f MB / %.1f MB\n", completedMB, totalMB))
 	} else {
-		sb.WriteString(fmt.Sprintf("  %s Идёт загрузка...\n", m.spinner.View()))
+		sb.WriteString(fmt.Sprintf("  %s Downloading...\n", m.spinner.View()))
 	}
 
 	sb.WriteString("\n")
@@ -1839,7 +1849,7 @@ func fetchOllamaModels(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		pc, ok := cfg.ActiveProviderConfig()
 		if !ok {
-			return ollamaModelsMsg{err: fmt.Errorf("конфиг провайдера не найден")}
+			return ollamaModelsMsg{err: fmt.Errorf("provider config not found")}
 		}
 
 		// Ollama API: GET /api/tags
@@ -1881,7 +1891,7 @@ func (m Model) selectModel(name string) (tea.Model, tea.Cmd) {
 
 	provider, err := ai.New(pc, m.cfg.ActiveProvider)
 	if err != nil {
-		m.errMsg = "Ошибка смены модели: " + err.Error()
+		m.errMsg = "Model switch error: " + err.Error()
 		m.currentState = stateChat
 		return m, nil
 	}
@@ -1903,13 +1913,13 @@ func (m Model) selectModel(name string) (tea.Model, tea.Cmd) {
 // startPull запускает ollama pull для указанной модели
 func (m Model) startPull(modelName string) (tea.Model, tea.Cmd) {
 	if modelName == "" {
-		m.errMsg = "Укажи имя модели: /pull qwen2.5-coder:7b"
+		m.errMsg = "Enter model name: /pull qwen2.5-coder:7b"
 		return m, nil
 	}
 
 	m.currentState = statePulling
 	m.pullModelName = modelName
-	m.pullStatus = "Подключение..."
+	m.pullStatus = "Connecting..."
 	m.pullCompleted = 0
 	m.pullTotal = 0
 
@@ -2019,178 +2029,6 @@ func parsePullLine(line string) (status string, completed, total int64, done boo
 	total = obj.Total
 	done = obj.Status == "success"
 	return
-}
-
-// ── Интерактивные вопросы от AI ───────────────────────────────────────────────
-
-// parseQuestionBlock ищет вопрос от AI в тексте ответа.
-// Поддерживает несколько форматов которые реально используют модели:
-//
-// Формат 1 — явный блок (наш формат):
-//
-//	```question
-//	Текст вопроса?
-//	- Вариант A
-//	- Вариант B
-//	```
-//
-// Формат 2 — вопрос + нумерованный список:
-//
-//	Какой подход выбрать?
-//	1. Вариант A
-//	2. Вариант B
-//
-// Формат 3 — вопрос + маркированный список:
-//
-//	Что добавить?
-//	- Вариант A
-//	- Вариант B
-//
-// Формат 4 — вопрос в конце текста с вариантами:
-//
-//	...объяснение...
-//	Что бы вы хотели улучшить в первую очередь?
-//	- Вариант A
-//	- Вариант B
-func parseQuestionBlock(text string) (question string, options []string) {
-	// Формат 1: явный ```question блок — самый надёжный
-	const openTag = "```question"
-	if start := strings.Index(text, openTag); start != -1 {
-		inner := text[start+len(openTag):]
-		if end := strings.Index(inner, "```"); end != -1 {
-			inner = strings.TrimSpace(inner[:end])
-		} else {
-			inner = strings.TrimSpace(inner)
-		}
-		lines := strings.Split(inner, "\n")
-		if len(lines) > 0 {
-			question = strings.TrimSpace(lines[0])
-			for _, line := range lines[1:] {
-				line = strings.TrimSpace(line)
-				if opt := extractListItem(line); opt != "" {
-					options = append(options, opt)
-				}
-			}
-			if question != "" {
-				return question, options
-			}
-		}
-	}
-
-	// Форматы 2-4: эвристический поиск — вопрос + список вариантов
-	// Условия срабатывания:
-	// - строка оканчивается на ? (вопрос)
-	// - сразу после неё идут 2+ строки с маркерами (-, *, •, 1., 2., ...)
-	// - список не слишком длинный (не TOC и не обычный текст)
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if !looksLikeQuestion(line) {
-			continue
-		}
-
-		// Собираем варианты начиная со следующей строки
-		var opts []string
-		for j := i + 1; j < len(lines) && j < i+16; j++ {
-			l := strings.TrimSpace(lines[j])
-			if l == "" {
-				// Пустая строка — продолжаем если вариантов ещё нет
-				if len(opts) > 0 {
-					break
-				}
-				continue
-			}
-			if opt := extractListItem(l); opt != "" {
-				opts = append(opts, opt)
-			} else if len(opts) == 0 {
-				// Ещё не нашли ни одного варианта — пропускаем вводные строки
-				// типа "Я могу помочь с:" или "Варианты:"
-				// но только если строка короткая и не похожа на абзац
-				if len(l) < 80 && (strings.HasSuffix(l, ":") || strings.HasSuffix(l, ".")) {
-					continue
-				}
-				// Длинный абзац — это не список, прерываем
-				break
-			} else {
-				// Уже есть варианты — любая не-список строка = конец
-				break
-			}
-		}
-
-		// Требуем минимум 2 варианта чтобы избежать ложных срабатываний
-		if len(opts) >= 2 {
-			return line, opts
-		}
-	}
-
-	return "", nil
-}
-
-// looksLikeQuestion возвращает true если строка похожа на вопрос
-func looksLikeQuestion(s string) bool {
-	if s == "" {
-		return false
-	}
-	// Самый надёжный критерий — знак вопроса
-	if strings.HasSuffix(s, "?") {
-		return true
-	}
-	// Без ? — только если строка содержит явные вопросительные слова
-	// И при этом не слишком короткая (чтобы не цеплять "что:" и т.п.)
-	if len(s) < 15 {
-		return false
-	}
-	lower := strings.ToLower(s)
-	// Только фразы которые однозначно указывают на вопрос без знака ?
-	questionPhrases := []string{
-		"what would you", "which would you", "what do you",
-		"что бы вы хотели", "что бы ты хотел", "что вы хотите",
-		"что ты хочешь", "что предпочитаете", "что предпочитаешь",
-	}
-	for _, phrase := range questionPhrases {
-		if strings.Contains(lower, phrase) && len(s) < 200 {
-			return true
-		}
-	}
-	return false
-}
-
-// extractListItem извлекает текст из строки-элемента списка
-// Поддерживает: "- текст", "* текст", "• текст", "1. текст", "1) текст"
-func extractListItem(s string) string {
-	if s == "" {
-		return ""
-	}
-	// Маркированный список: - * •
-	for _, prefix := range []string{"- ", "* ", "• ", "– ", "— "} {
-		if strings.HasPrefix(s, prefix) {
-			opt := strings.TrimSpace(strings.TrimPrefix(s, prefix))
-			if opt != "" && len(opt) < 200 {
-				return opt
-			}
-		}
-	}
-	// Нумерованный список: "1. " "2) " "1: "
-	if len(s) >= 3 {
-		// Цифра в начале
-		i := 0
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-		if i > 0 && i < len(s) {
-			sep := s[i]
-			if sep == '.' || sep == ')' || sep == ':' {
-				rest := strings.TrimSpace(s[i+1:])
-				// Убираем вложенные маркеры типа "1. **Вариант**"
-				rest = strings.TrimPrefix(rest, "**")
-				rest = strings.TrimSuffix(rest, "**")
-				if rest != "" && len(rest) < 200 {
-					return rest
-				}
-			}
-		}
-	}
-	return ""
 }
 
 // submitQuestionAnswer отправляет выбранный ответ на вопрос AI
@@ -2635,7 +2473,7 @@ func (m Model) renderPalette() string {
 	var sb strings.Builder
 
 	// Заголовок
-	title := headerStyle.Render(" ⌘ Палитра команд ")
+	title := headerStyle.Render(m.tr().PaletteTitle)
 	sb.WriteString(title + "\n")
 
 	// Строка поиска
@@ -2649,7 +2487,7 @@ func (m Model) renderPalette() string {
 	// Список команд
 	filtered := filterPaletteItems(m.paletteItems, m.paletteFilter)
 	if len(filtered) == 0 {
-		sb.WriteString(keyHintStyle.Render("  Ничего не найдено") + "\n")
+		sb.WriteString(keyHintStyle.Render(m.tr().PaletteEmpty) + "\n")
 	}
 	for i, item := range filtered {
 		keyPart := keyStyle.Render(fmt.Sprintf("%-10s", item.key))
@@ -2747,17 +2585,17 @@ func (m Model) deleteSession(s *session.Session) (tea.Model, tea.Cmd) {
 func (m Model) renderSessionLoad() string {
 	var sb strings.Builder
 
-	title := headerStyle.Render(" TermCode — Сессии ")
+	title := headerStyle.Render(m.tr().SessionsTitle)
 	sb.WriteString(title + "\n\n")
 
 	if m.sessionsLoading {
-		sb.WriteString(fmt.Sprintf("  %s Загружаем сессии...\n", m.spinner.View()))
+		sb.WriteString(fmt.Sprintf(m.tr().SessionsLoading, m.spinner.View()))
 		return sb.String()
 	}
 
 	if len(m.savedSessions) == 0 {
-		sb.WriteString(keyHintStyle.Render("  Нет сохранённых сессий.\n\n"))
-		sb.WriteString(keyStyle.Render("  Esc") + keyHintStyle.Render(" — назад\n"))
+		sb.WriteString(keyHintStyle.Render(m.tr().SessionsEmpty))
+		sb.WriteString(keyStyle.Render("  Esc") + keyHintStyle.Render(" — back\n"))
 		return sb.String()
 	}
 
@@ -2766,8 +2604,8 @@ func (m Model) renderSessionLoad() string {
 
 	for i, s := range m.savedSessions {
 		// Форматируем дату
-		age := formatAge(s.UpdatedAt)
-		msgs := fmt.Sprintf("%d сообщ.", len(s.Messages))
+		age := m.formatAge(s.UpdatedAt)
+		msgs := fmt.Sprintf(m.tr().SessionsMsgs, len(s.Messages))
 		model := s.Model
 		if len(model) > 20 {
 			model = model[:18] + ".."
@@ -2787,22 +2625,23 @@ func (m Model) renderSessionLoad() string {
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("\n  %d сессий сохранено", len(m.savedSessions)))
+	sb.WriteString(fmt.Sprintf(m.tr().SessionsCount, len(m.savedSessions)))
 	return sb.String()
 }
 
 // formatAge возвращает человекочитаемое время ("2ч назад", "3д назад")
-func formatAge(t time.Time) string {
+func (m Model) formatAge(t time.Time) string {
+	tr := m.tr()
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:
-		return "только что"
+		return tr.AgeJustNow
 	case d < time.Hour:
-		return fmt.Sprintf("%dм назад", int(d.Minutes()))
+		return fmt.Sprintf(tr.AgeMin, int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dч назад", int(d.Hours()))
+		return fmt.Sprintf(tr.AgeHour, int(d.Hours()))
 	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%dд назад", int(d.Hours()/24))
+		return fmt.Sprintf(tr.AgeDay, int(d.Hours()/24))
 	default:
 		return t.Format("02.01.06")
 	}
@@ -2852,11 +2691,11 @@ func (m Model) renderAssistantContent(msgIdx int, content string, width int) str
 	if expanded {
 		thinkHeader = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#5C6370")).Italic(true).
-			Render("🧠 Мысли [T — скрыть]")
+			Render("🧠 Thinking [T — hide]")
 	} else {
 		thinkHeader = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#5C6370")).Italic(true).
-			Render("🧠 Мысли [T — показать]")
+			Render("🧠 Thinking [T — show]")
 	}
 
 	var sb strings.Builder

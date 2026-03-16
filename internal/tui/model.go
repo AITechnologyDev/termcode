@@ -1397,8 +1397,10 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
-	// Простая рамка — только горизонтальные линии
-	divider := keyHintStyle.Render(strings.Repeat("─", w))
+	// Горизонтальные линии цветом акцента
+	divider := lipgloss.NewStyle().
+		Foreground(colorPrimary).
+		Render(strings.Repeat("─", w))
 	sb.WriteString(divider + "\n")
 
 	selectedStyle := lipgloss.NewStyle().

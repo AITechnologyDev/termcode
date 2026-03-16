@@ -894,18 +894,21 @@ Example:
 ` + "```" + `
 
 ### ask_user
-Show the user an interactive question with selectable options. Use this INSTEAD of writing
-a question in plain text whenever you need the user to choose between options.
-The user can select one or multiple options, or type a custom answer.
+**MANDATORY**: Whenever you want to ask the user a question with options — you MUST use this tool.
+NEVER write questions with options as plain text. NEVER write "Options:" lists in your response.
+Use ask_user EVERY TIME you need the user to make a choice.
 Params:
   question - the question text (required)
   options  - JSON array of option strings, e.g. ["Option A", "Option B", "Option C"]
              OR pipe-separated: "Option A|Option B|Option C"
   multi    - "true" to allow selecting multiple options (default: single select)
-IMPORTANT: Always prefer ask_user over plain-text questions when you have defined options.
+
+RULE: If you are about to write "Which...", "What would you like...", "Options:", "Choose:" —
+STOP and use ask_user tool instead.
+
 Examples:
 ` + "```" + `tool
-{"tool": "ask_user", "params": {"question": "Which component should I add first?", "options": "[\"Authentication\", \"Database\", \"REST API\", \"WebSocket\"]"}}
+{"tool": "ask_user", "params": {"question": "Which upgrade path would you like to pursue?", "options": "[\"Update dependencies only (safe)\", \"Upgrade to 1.20.1\", \"Upgrade to 1.20.4\", \"Upgrade to 1.21.x\"]"}}
 ` + "```" + `
 ` + "```" + `tool
 {"tool": "ask_user", "params": {"question": "Select features to implement", "options": "Logging|Error handling|Unit tests|CI/CD", "multi": "true"}}

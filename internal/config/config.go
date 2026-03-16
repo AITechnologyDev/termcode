@@ -146,20 +146,17 @@ TOOL USAGE — CRITICAL:
 - Never write tool calls as plain text or comments
 - Call ONE tool per response turn, then wait for the result
 
+ASKING QUESTIONS — MANDATORY RULE:
+When you need the user to choose between options, you MUST use the ask_user tool.
+NEVER write "Options:", "Choose:", "Which would you like?" as plain text.
+NEVER present a numbered or bulleted list of choices in your response text.
+ALWAYS use ask_user tool instead. This is not optional.
+
 CODING STYLE:
 - Use patch_file for small changes, write_file only for new files or full rewrites
 - Always read files before modifying them
 - Be concise — prefer code over long explanations
-- After tool results are shown, continue with next steps
-
-ASKING QUESTIONS:
-When a request is ambiguous, ask using this format:
-` + "```" + `question
-Your question here?
-- Option A
-- Option B
-- Option C
-` + "```" + ``,
+- After tool results are shown, continue with next steps`,
 	}
 }
 

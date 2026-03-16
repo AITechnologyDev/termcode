@@ -1397,10 +1397,10 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
-	// Горизонтальные линии цветом акцента
+	// Горизонтальные линии на всю ширину терминала
 	divider := lipgloss.NewStyle().
 		Foreground(colorPrimary).
-		Render(strings.Repeat("─", w))
+		Render(strings.Repeat("─", m.width))
 	sb.WriteString(divider + "\n")
 
 	selectedStyle := lipgloss.NewStyle().

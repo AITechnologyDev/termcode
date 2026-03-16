@@ -1074,6 +1074,10 @@ type streamReaderMsg struct {
 // handleAIChunk обрабатывает кусок ответа AI
 func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
+		// Отменяем текущий стрим, чтобы он не фонил в фоне
+		if m.streamCancel != nil {
+			m.streamCancel()
+		}
 		m.currentState = stateChat
 		m.errMsg = "AI error: " + msg.err.Error()
 		m.streaming = ""
@@ -1397,16 +1401,14 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
-	// Используем реальную ширину терминала
 	lineW := m.width
 	if lineW < 10 {
 		lineW = 10
 	}
 
-	divider := lipgloss.NewStyle().
-		Foreground(colorPrimary).
-		Render(strings.Repeat("─", lineW))
-	sb.WriteString(divider + "\n")
+	// Верхний разделитель с отступом
+	divider := dividerStyle.Width(lineW-2).Render(strings.Repeat("─", lineW-2))
+	sb.WriteString("  " + divider + "\n")
 
 	hlBase := lipgloss.NewStyle().
 		Background(colorPrimary).
@@ -1419,14 +1421,12 @@ func (m Model) renderModelSelect() string {
 		if i == m.modelCursor {
 			prefix = "▶ "
 		}
-		// Собираем строку и дополняем пробелами до lineW
 		content := prefix + model
 		contentRunes := []rune(content)
 		if len(contentRunes) > lineW {
 			contentRunes = append([]rune(prefix), []rune(model)[:lineW-len([]rune(prefix))-1]...)
 			contentRunes = append(contentRunes, '…')
 		}
-		// Дополняем пробелами до полной ширины
 		for len(contentRunes) < lineW {
 			contentRunes = append(contentRunes, ' ')
 		}
@@ -1439,7 +1439,8 @@ func (m Model) renderModelSelect() string {
 		}
 	}
 
-	sb.WriteString(divider + "\n\n")
+	// Нижний разделитель с таким же отступом
+	sb.WriteString("  " + divider + "\n\n")
 	sb.WriteString(keyHintStyle.Render(fmt.Sprintf(t.ModelSelectCount, m.modelCursor+1, len(m.ollamaModels))))
 	return sb.String()
 }

@@ -55,13 +55,13 @@ func (e *Executor) resolvePath(p string) (string, error) {
 	if filepath.IsAbs(p) {
 		clean := filepath.Clean(p) + string(filepath.Separator)
 		if !strings.HasPrefix(clean, safeRoot) {
-			return "", fmt.Errorf("путь за пределами рабочей директории: %s", p)
+			return "", fmt.Errorf("path outside working directory: %s", p)
 		}
 		return filepath.Clean(p), nil
 	}
 	full := filepath.Clean(filepath.Join(e.WorkDir, p))
 	if !strings.HasPrefix(full+string(filepath.Separator), safeRoot) {
-		return "", fmt.Errorf("путь за пределами рабочей директории: %s", p)
+		return "", fmt.Errorf("path outside working directory: %s", p)
 	}
 	return full, nil
 }
@@ -75,13 +75,13 @@ func (e *Executor) ReadFile(path string) Result {
 
 	data, err := os.ReadFile(abs)
 	if err != nil {
-		return fail(fmt.Sprintf("чтение файла %s: %v", path, err))
+		return fail(fmt.Sprintf("read file %s: %v", path, err))
 	}
 
 	// Ограничение: не более 100KB за раз
 	const maxBytes = 100 * 1024
 	if len(data) > maxBytes {
-		data = append(data[:maxBytes], []byte("\n... [файл обрезан, >100KB]")...)
+		data = append(data[:maxBytes], []byte("\n... [file truncated, >100KB]")...)
 	}
 
 	return ok(string(data))
@@ -95,14 +95,14 @@ func (e *Executor) WriteFile(path, content string) Result {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(abs), 0750); err != nil {
-		return fail(fmt.Sprintf("создание директории: %v", err))
+		return fail(fmt.Sprintf("create directory: %v", err))
 	}
 
 	if err := os.WriteFile(abs, []byte(content), 0640); err != nil {
-		return fail(fmt.Sprintf("запись файла %s: %v", path, err))
+		return fail(fmt.Sprintf("write file %s: %v", path, err))
 	}
 
-	return ok(fmt.Sprintf("файл записан: %s (%d байт)", path, len(content)))
+	return ok(fmt.Sprintf("file written: %s (%d bytes)", path, len(content)))
 }
 
 // PatchFile заменяет oldStr на newStr в файле (первое вхождение)
@@ -114,23 +114,23 @@ func (e *Executor) PatchFile(path, oldStr, newStr string) Result {
 
 	data, err := os.ReadFile(abs)
 	if err != nil {
-		return fail(fmt.Sprintf("чтение файла для патча: %v", err))
+		return fail(fmt.Sprintf("read file for patch: %v", err))
 	}
 
 	content := string(data)
 	if !strings.Contains(content, oldStr) {
-		return fail(fmt.Sprintf("строка для замены не найдена в %s", path))
+		return fail(fmt.Sprintf("string not found in %s", path))
 	}
 
 	patched := strings.Replace(content, oldStr, newStr, 1)
 
 	if err := os.WriteFile(abs, []byte(patched), 0640); err != nil {
-		return fail(fmt.Sprintf("запись патча: %v", err))
+		return fail(fmt.Sprintf("write patch: %v", err))
 	}
 
 	// Считаем статистику изменений
 	diffStat := diffStats(path, oldStr, newStr)
-	return ok(fmt.Sprintf("патч применён в %s\n%s", path, diffStat))
+	return ok(fmt.Sprintf("patch applied: %s\n%s", path, diffStat))
 }
 
 // diffStats генерирует компактную diff-статистику в стиле git
@@ -207,11 +207,11 @@ func (e *Executor) ListFiles(subPath string) Result {
 	var sb strings.Builder
 	err := walkTree(base, base, 0, 4, &sb)
 	if err != nil {
-		return fail(fmt.Sprintf("обход директории: %v", err))
+		return fail(fmt.Sprintf("directory walk: %v", err))
 	}
 
 	if sb.Len() == 0 {
-		return ok("(директория пуста)")
+		 return ok("(directory is empty)")
 	}
 	return ok(sb.String())
 }
@@ -258,7 +258,7 @@ func (e *Executor) RunCommand(command string) Result {
 	lower := strings.ToLower(command)
 	for _, d := range dangerous {
 		if strings.Contains(lower, d) {
-			return fail(fmt.Sprintf("команда заблокирована по соображениям безопасности: %s", d))
+			return fail(fmt.Sprintf("command blocked for security reasons: %s", d))
 		}
 	}
 
@@ -289,12 +289,12 @@ func (e *Executor) RunCommand(command string) Result {
 
 	output := sb.String()
 	if ctx.Err() == context.DeadlineExceeded {
-		output += "\n[таймаут: команда выполнялась более 30 секунд]"
+		output += "\n[timeout: command ran for more than 30 seconds]"
 	}
 	// Ограничение вывода
 	const maxOut = 8000
 	if len(output) > maxOut {
-		output = output[:maxOut] + "\n... [вывод обрезан]"
+		output = output[:maxOut] + "\n... [output truncated]"
 	}
 
 	if err != nil {
@@ -313,7 +313,7 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 	case "read_file":
 		path, ok := params["path"]
 		if !ok || path == "" {
-			return fail("read_file: нужен параметр 'path'")
+			return fail("read_file: missing parameter 'path'")
 		}
 		return e.ReadFile(path)
 
@@ -321,7 +321,7 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 		path, ok1 := params["path"]
 		content, ok2 := params["content"]
 		if !ok1 || !ok2 {
-			return fail("write_file: нужны параметры 'path' и 'content'")
+			return fail("write_file: missing parameters 'path' and 'content'")
 		}
 		return e.WriteFile(path, content)
 
@@ -330,7 +330,7 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 		oldStr := params["old_str"]
 		newStr := params["new_str"]
 		if path == "" || oldStr == "" {
-			return fail("patch_file: нужны 'path', 'old_str', 'new_str'")
+			return fail("patch_file: missing 'path', 'old_str', 'new_str'")
 		}
 		return e.PatchFile(path, oldStr, newStr)
 
@@ -340,14 +340,14 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 	case "run_command":
 		cmd, ok := params["command"]
 		if !ok || cmd == "" {
-			return fail("run_command: нужен параметр 'command'")
+			return fail("run_command: missing parameter 'command'")
 		}
 		return e.RunCommand(cmd)
 
 	case "download_file":
 		url, ok := params["url"]
 		if !ok || url == "" {
-			return fail("download_file: нужен параметр 'url'")
+			return fail("download_file: missing parameter 'url'")
 		}
 		dest := params["path"]
 		return e.DownloadFile(url, dest)
@@ -355,7 +355,7 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 	case "web_search":
 		query, ok := params["query"]
 		if !ok || query == "" {
-			return fail("web_search: нужен параметр 'query'")
+			return fail("web_search: missing parameter 'query'")
 		}
 		maxResults := 5
 		return WebSearch(query, maxResults)
@@ -363,14 +363,14 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 	case "fetch_page":
 		url, ok := params["url"]
 		if !ok || url == "" {
-			return fail("fetch_page: нужен параметр 'url'")
+			return fail("fetch_page: missing parameter 'url'")
 		}
 		return FetchPage(url)
 
 	case "ask_user":
 		question, ok := params["question"]
 		if !ok || question == "" {
-			return fail("ask_user: нужен параметр 'question'")
+			return fail("ask_user: missing parameter 'question'")
 		}
 		// Варианты передаются как "options" — JSON массив строк
 		// Формат: {"question": "...", "options": "[\"A\", \"B\", \"C\"]", "multi": "true"}
@@ -400,7 +400,7 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 		}
 
 	default:
-		return fail(fmt.Sprintf("неизвестный инструмент: %s", name))
+		return fail(fmt.Sprintf("unknown tool: %s", name))
 	}
 }
 
@@ -408,7 +408,7 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 func (e *Executor) DownloadFile(rawURL, destPath string) Result {
 	// Базовая проверка URL
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		return fail("download_file: поддерживаются только http/https URL")
+		return fail("download_file: only http/https URLs supported")
 	}
 
 	// Если путь не указан — берём имя файла из URL
@@ -430,7 +430,7 @@ func (e *Executor) DownloadFile(rawURL, destPath string) Result {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(abs), 0750); err != nil {
-		return fail(fmt.Sprintf("создание директории: %v", err))
+		return fail(fmt.Sprintf("create directory: %v", err))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -438,18 +438,18 @@ func (e *Executor) DownloadFile(rawURL, destPath string) Result {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return fail(fmt.Sprintf("ошибка запроса: %v", err))
+		return fail(fmt.Sprintf("request error: %v", err))
 	}
 	req.Header.Set("User-Agent", "TermCode/0.1")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fail(fmt.Sprintf("ошибка загрузки: %v", err))
+		return fail(fmt.Sprintf("download error: %v", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fail(fmt.Sprintf("сервер вернул %d: %s", resp.StatusCode, rawURL))
+		return fail(fmt.Sprintf("server returned %d: %s", resp.StatusCode, rawURL))
 	}
 
 	// Ограничение 50 MB
@@ -457,17 +457,17 @@ func (e *Executor) DownloadFile(rawURL, destPath string) Result {
 	limited := io.LimitReader(resp.Body, maxSize+1)
 	data, err := io.ReadAll(limited)
 	if err != nil {
-		return fail(fmt.Sprintf("ошибка чтения: %v", err))
+		return fail(fmt.Sprintf("read error: %v", err))
 	}
 	if len(data) > maxSize {
-		return fail("файл превышает лимит 50 MB")
+		return fail("file exceeds 50 MB limit")
 	}
 
 	if err := os.WriteFile(abs, data, 0640); err != nil {
-		return fail(fmt.Sprintf("ошибка записи: %v", err))
+		return fail(fmt.Sprintf("write error: %v", err))
 	}
 
-	return ok(fmt.Sprintf("скачано %d байт → %s", len(data), destPath))
+	return ok(fmt.Sprintf("downloaded %d bytes → %s", len(data), destPath))
 }
 
 // ── Веб-поиск ─────────────────────────────────────────────────────────────────
@@ -508,28 +508,28 @@ func WebSearch(query string, maxResults int) Result {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fail("web_search: ошибка запроса: " + err.Error())
+		return fail("web_search: request error: " + err.Error())
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {
-		return fail("web_search: ошибка чтения: " + err.Error())
+		return fail("web_search: read error: " + err.Error())
 	}
 
 	var ddg ddgResponse
 	if err := json.Unmarshal(body, &ddg); err != nil {
-		return fail("web_search: ошибка парсинга: " + err.Error())
+		return fail("web_search: parse error: " + err.Error())
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🔍 Результаты поиска: %q\n\n", query))
+	sb.WriteString(fmt.Sprintf("🔍 Search results: %q\n\n", query))
 
 	count := 0
 
 	// 1. Прямой ответ (калькулятор, конвертер и т.д.)
 	if ddg.Answer != "" {
-		sb.WriteString(fmt.Sprintf("💡 Ответ: %s\n\n", ddg.Answer))
+		sb.WriteString(fmt.Sprintf("💡 Answer: %s\n\n", ddg.Answer))
 		count++
 	}
 
@@ -539,7 +539,7 @@ func WebSearch(query string, maxResults int) Result {
 		if ddg.AbstractURL != "" {
 			src = fmt.Sprintf("%s (%s)", src, ddg.AbstractURL)
 		}
-		sb.WriteString(fmt.Sprintf("📖 %s\n   Источник: %s\n\n", ddg.AbstractText, src))
+		sb.WriteString(fmt.Sprintf("📖 %s\n   Source: %s\n\n", ddg.AbstractText, src))
 		count++
 	}
 
@@ -586,7 +586,7 @@ func WebSearch(query string, maxResults int) Result {
 		return webSearchLite(query, maxResults)
 	}
 
-	sb.WriteString(fmt.Sprintf("---\n%d результатов. Используй fetch_page для чтения страницы.", count))
+	sb.WriteString(fmt.Sprintf("---\n%d results. Use fetch_page to read a page.", count))
 	return ok(sb.String())
 }
 
@@ -616,7 +616,7 @@ func webSearchLite(query string, maxResults int) Result {
 	// Простой парсинг HTML — ищем ссылки результатов
 	html := string(body)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🔍 Результаты поиска: %q\n\n", query))
+	sb.WriteString(fmt.Sprintf("🔍 Search results: %q\n\n", query))
 
 	count := 0
 	// DDG lite результаты имеют паттерн: href="//duckduckgo.com/l/?uddg=URL"
@@ -653,10 +653,10 @@ func webSearchLite(query string, maxResults int) Result {
 
 	if count == 0 {
 		return fail(fmt.Sprintf(
-			"web_search: DDG не вернул результатов для %q. Попробуй другой запрос.", query))
+			"web_search: no results from DDG для %q. Try a different query.", query))
 	}
 
-	sb.WriteString(fmt.Sprintf("---\n%d результатов. Используй fetch_page для чтения.", count))
+	sb.WriteString(fmt.Sprintf("---\n%d results. Use fetch_page to read.", count))
 	return ok(sb.String())
 }
 
@@ -678,7 +678,7 @@ func FetchPage(rawURL string) Result {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fail("fetch_page: ошибка запроса: " + err.Error())
+		return fail("fetch_page: request error: " + err.Error())
 	}
 	defer resp.Body.Close()
 
@@ -689,7 +689,7 @@ func FetchPage(rawURL string) Result {
 	// Ограничиваем 512KB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {
-		return fail("fetch_page: ошибка чтения: " + err.Error())
+		return fail("fetch_page: read error: " + err.Error())
 	}
 
 	// Убираем HTML теги — простой стриппер без зависимостей
@@ -698,11 +698,11 @@ func FetchPage(rawURL string) Result {
 	// Ограничиваем вывод до 8000 символов
 	const maxOut = 8000
 	if len(text) > maxOut {
-		text = text[:maxOut] + "\n\n... [страница обрезана, первые 8000 символов]"
+		text = text[:maxOut] + "\n\n... [page truncated, first 8000 chars]"
 	}
 
 	if strings.TrimSpace(text) == "" {
-		return fail("fetch_page: страница пуста или не содержит текста")
+		return fail("fetch_page: page is empty or has no text")
 	}
 
 	return ok(fmt.Sprintf("📄 %s\n\n%s", rawURL, text))

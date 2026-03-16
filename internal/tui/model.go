@@ -91,6 +91,7 @@ type i18nStrings struct {
 	ProfileSaveHint     string
 	InstructTitle       string
 	InstructSaveHint    string
+	UserLabel           string
 }
 
 var i18nEN = i18nStrings{
@@ -158,6 +159,7 @@ var i18nEN = i18nStrings{
 	ProfileSaveHint:  "  Ctrl+S save  Esc cancel",
 	InstructTitle:    " TermCode — AI Instructions ",
 	InstructSaveHint: "  Ctrl+S save  Esc cancel",
+	UserLabel:        "▶ You",
 }
 
 var i18nRU = i18nStrings{
@@ -225,6 +227,7 @@ var i18nRU = i18nStrings{
 	ProfileSaveHint:  "  Ctrl+S сохранить  Esc отмена",
 	InstructTitle:    " TermCode — Инструкции для AI ",
 	InstructSaveHint: "  Ctrl+S сохранить  Esc отмена",
+	UserLabel:        "▶ Ты",
 }
 
 func (m *Model) tr() i18nStrings {
@@ -1381,18 +1384,29 @@ func (m Model) renderModelSelect() string {
 		end = len(m.ollamaModels)
 	}
 
+	// Стиль выбранной строки — без border, просто цвет фона
+	selectedStyle := lipgloss.NewStyle().
+		Background(colorPrimary).
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Bold(true).
+		Width(w - 2).
+		PaddingLeft(1)
+
+	normalStyle := lipgloss.NewStyle().
+		Foreground(colorText).
+		Width(w - 2).
+		PaddingLeft(2)
+
 	for i := start; i < end; i++ {
 		model := m.ollamaModels[i]
-		// Обрезаем длинные имена
 		maxNameW := w - 6
 		if len(model) > maxNameW {
 			model = model[:maxNameW-1] + "…"
 		}
 		if i == m.modelCursor {
-			line := userBubbleStyle.Width(w - 2).Render("▶ " + model)
-			listSb.WriteString(line + "\n")
+			listSb.WriteString(selectedStyle.Render("▶ " + model) + "\n")
 		} else {
-			listSb.WriteString(fmt.Sprintf("  %s\n", model))
+			listSb.WriteString(normalStyle.Render(model) + "\n")
 		}
 	}
 
@@ -1625,7 +1639,7 @@ func (m Model) renderMessages() string {
 	for msgIdx, msg := range m.sess.Messages {
 		switch msg.Role {
 		case session.RoleUser:
-			sb.WriteString(userLabelStyle.Render("▶ Ты") + "\n")
+			sb.WriteString(userLabelStyle.Render(m.tr().UserLabel) + "\n")
 			sb.WriteString(userBubbleStyle.Width(contentWidth).Render(msg.Content))
 			sb.WriteString("\n\n")
 

@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+	"sync"
+	"sync/atomic"
 
 	"github.com/AITechnologyDev/termcode/internal/ai"
 	"github.com/AITechnologyDev/termcode/internal/config"
@@ -108,6 +110,9 @@ type i18nStrings struct {
 	AgeMin     string
 	AgeHour    string
 	AgeDay     string
+	// Retry messages
+	RetryConnecting  string
+	RetryAttempt     string
 }
 
 var i18nEN = i18nStrings{
@@ -187,6 +192,9 @@ var i18nEN = i18nStrings{
 	AgeMin:            "%dm ago",
 	AgeHour:           "%dh ago",
 	AgeDay:            "%dd ago",
+	// Retry messages
+	RetryConnecting:  "⚠ Connection lost. Retrying...",
+	RetryAttempt:     "Retry %d/%d...",
 }
 
 var i18nRU = i18nStrings{
@@ -266,6 +274,9 @@ var i18nRU = i18nStrings{
 	AgeMin:            "%dм назад",
 	AgeHour:           "%dч назад",
 	AgeDay:            "%dд назад",
+	// Retry messages
+	RetryConnecting:  "⚠ Соединение потеряно. Переподключаюсь...",
+	RetryAttempt:     "Попытка %d/%d...",
 }
 
 func (m *Model) tr() i18nStrings {
@@ -290,6 +301,7 @@ const (
 	stateProviderSelect // выбор провайдера
 	stateProfileEdit    // редактирование профиля пользователя
 	stateInstructEdit   // редактирование инструкций для AI
+	stateRetrying       // повторная попытка соединения
 )
 
 // ── Сообщения BubbleTea ───────────────────────────────────────────────────────
@@ -299,6 +311,8 @@ type aiChunkMsg struct {
 	content string
 	done    bool
 	err     error
+	// retryCount — номер текущей попытки (для retry логики)
+	retryCount int
 }
 
 // toolDoneMsg — результат выполнения инструмента
@@ -369,7 +383,9 @@ type Model struct {
 	currentState  state
 	streaming     string      // буфер текущего стримингового ответа
 	errMsg        string
-	streamCancel  func()      // отмена текущего стрима (предотвращает goroutine leak)
+	// streamCancel — atomic pointer для thread-safe отмены
+	streamCancel  atomic.Pointer[context.CancelFunc]
+	streamMu      sync.Mutex   // защита от race при обновлении cancel
 
 	// Размеры терминала
 	width  int
@@ -428,6 +444,11 @@ type Model struct {
 
 	// ── Think-блоки (reasoning) ───────────────────────────────────────────
 	thinkExpanded map[int]bool // msgIndex → раскрыт ли think-блок
+
+	// ── Retry логика ──────────────────────────────────────────────────────
+	retryCount     int        // текущая попытка
+	maxRetries     int        // максимум попыток (3)
+	pendingContent string     // накопленный контент для retry
 }
 
 // New создаёт новую TUI модель
@@ -500,10 +521,13 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		modelsLoading:  true,
 		screenWidthPx:  widthPx,
 		screenHeightPx: heightPx,
+		maxRetries:     3,
+		retryCount:     0,
 	}
 	m.paletteItems = m.buildPaletteItems()
 	m.thinkExpanded = make(map[int]bool)
 	m.questionSelected = make(map[int]bool)
+	// streamCancel инициализируется zero-value (nil pointer)
 	return m, nil
 }
 
@@ -853,9 +877,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
-			if m.streamCancel != nil {
-				m.streamCancel()
-			}
+			m.cancelStream()
 			_ = m.sess.Save()
 			return m, tea.Quit
 		case tea.KeyCtrlS:
@@ -954,6 +976,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// cancelStream — thread-safe отмена текущего стрима
+func (m *Model) cancelStream() {
+	m.streamMu.Lock()
+	defer m.streamMu.Unlock()
+	
+	if cancelPtr := m.streamCancel.Load(); cancelPtr != nil {
+		(*cancelPtr)()
+		m.streamCancel.Store(nil)
+	}
+}
+
 // sendMessage отправляет сообщение пользователя в AI
 func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(m.input.Value())
@@ -968,6 +1001,8 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	m.genStartTime = time.Now()
 	m.genTokens = 0
 	m.genSpeed = 0
+	m.retryCount = 0
+	m.pendingContent = ""
 
 	m.sess.AddMessage(session.RoleUser, text)
 	m.refreshViewport()
@@ -977,8 +1012,11 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, m.spinner.Tick)
 }
 
-// streamAI запускает запрос к AI провайдеру
+// streamAI запускает запрос к AI провайдеру с retry логикой
 func (m *Model) streamAI() tea.Cmd {
+	// Всегда отменяем предыдущий стрим перед созданием нового
+	m.cancelStream()
+	
 	pc, _ := m.cfg.ActiveProviderConfig()
 	maxTokens := pc.GetMaxTokens()
 	contextLength := pc.GetContextLength()
@@ -1045,21 +1083,31 @@ func (m *Model) streamAI() tea.Cmd {
 	m.contextUsed = ai.SumTokens(apiMsgs) + ai.EstimateTokens(systemPrompt)
 	m.contextLimit = contextLength
 
-	// Отменяем предыдущий стрим если он ещё идёт
-	if m.streamCancel != nil {
-		m.streamCancel()
-	}
+	// Создаём новый контекст для стрима
 	ctx, cancel := context.WithCancel(context.Background())
-	m.streamCancel = cancel
+	
+	// Сохраняем cancel функцию через atomic pointer
+	m.streamMu.Lock()
+	m.streamCancel.Store(&cancel)
+	m.streamMu.Unlock()
 
 	provider := m.provider
 	ctxLen := contextLength // захватываем для горутины
+	currentRetry := m.retryCount
+	pendingContent := m.pendingContent
 
 	streamCmd := func() tea.Msg {
 		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTokens, ctxLen)
 		if err != nil {
 			cancel()
-			return aiChunkMsg{err: err}
+			// Проверяем — нужно ли retry
+			if currentRetry < m.maxRetries && isRetryableError(err) {
+				return aiChunkMsg{
+					err:        err,
+					retryCount: currentRetry + 1,
+				}
+			}
+			return aiChunkMsg{err: err, done: true}
 		}
 
 		select {
@@ -1070,9 +1118,24 @@ func (m *Model) streamAI() tea.Cmd {
 				return aiChunkMsg{done: true}
 			}
 			if chunk.Err != nil {
-				return aiChunkMsg{err: chunk.Err}
+				cancel()
+				// Проверяем — нужно ли retry
+				if currentRetry < m.maxRetries && isRetryableError(chunk.Err) {
+					return aiChunkMsg{
+						content:    pendingContent + chunk.Content,
+						err:        chunk.Err,
+						retryCount: currentRetry + 1,
+					}
+				}
+				return aiChunkMsg{err: chunk.Err, done: true}
 			}
-			return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch, ctx: ctx}
+			return streamReaderMsg{
+				content:    pendingContent + chunk.Content,
+				done:       chunk.Done,
+				ch:         ch,
+				ctx:        ctx,
+				retryCount: currentRetry,
+			}
 		}
 	}
 
@@ -1082,24 +1145,66 @@ func (m *Model) streamAI() tea.Cmd {
 	return streamCmd
 }
 
+// isRetryableError проверяет, стоит ли повторять запрос при этой ошибке
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Сетевые ошибки — retry
+	retryable := []string{
+		"connection refused",
+		"connection reset",
+		"broken pipe",
+		"timeout",
+		"no such host",
+		"EOF",
+		"unexpected EOF",
+		"stream",
+		"parse",
+	}
+	for _, s := range retryable {
+		if strings.Contains(strings.ToLower(errStr), s) {
+			return true
+		}
+	}
+	return false
+}
+
 // streamReaderMsg — внутреннее сообщение для продолжения чтения стрима
 type streamReaderMsg struct {
 	content string
 	done    bool
 	ch      <-chan ai.StreamChunk
 	ctx     context.Context
+	retryCount int
 }
 
-// handleAIChunk обрабатывает кусок ответа AI
+// handleAIChunk обрабатывает кусок ответа AI с поддержкой retry
 func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
+	// Если это retry-сигнал — запускаем повторную попытку
+	if msg.err != nil && msg.retryCount > m.retryCount && msg.retryCount <= m.maxRetries {
+		m.retryCount = msg.retryCount
+		m.pendingContent = msg.content
+		m.streaming = msg.content
+		m.errMsg = fmt.Sprintf(m.tr().RetryAttempt, m.retryCount, m.maxRetries)
+		m.refreshViewport()
+		
+		// Небольшая задержка перед retry (экспоненциальная backoff)
+		delay := time.Duration(m.retryCount) * 500 * time.Millisecond
+		return m, tea.Tick(delay, func(time.Time) tea.Msg {
+			return retryMsg{}
+		})
+	}
+	
 	if msg.err != nil {
-		// Отменяем текущий стрим, чтобы он не фонил в фоне
-		if m.streamCancel != nil {
-			m.streamCancel()
-		}
+		// Финальная ошибка после всех попыток
+		m.cancelStream()
 		m.currentState = stateChat
 		m.errMsg = "AI error: " + msg.err.Error()
 		m.streaming = ""
+		m.retryCount = 0
+		m.pendingContent = ""
 		m.refreshViewport()
 		return m, nil
 	}
@@ -1119,9 +1224,16 @@ func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateStream читает следующий чанк из канала
+// retryMsg — сигнал для запуска retry
+type retryMsg struct{}
+
+// updateStream читает следующий чанк из канала с поддержкой retry
 func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
-	m.streaming += msg.content
+	// Обновляем pending content для возможного retry
+	m.pendingContent = msg.content
+	m.retryCount = msg.retryCount
+	
+	m.streaming = msg.content
 	m.genTokens += countTokens(msg.content)
 	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
 		m.genSpeed = float64(m.genTokens) / elapsed
@@ -1146,9 +1258,19 @@ func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
 					return aiChunkMsg{done: true}
 				}
 				if chunk.Err != nil {
-					return aiChunkMsg{err: chunk.Err}
+					return aiChunkMsg{
+						content:    msg.content,
+						err:        chunk.Err,
+						retryCount: msg.retryCount,
+					}
 				}
-				return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch, ctx: ctx}
+				return streamReaderMsg{
+					content:    msg.content + chunk.Content,
+					done:       chunk.Done,
+					ch:         ch,
+					ctx:        ctx,
+					retryCount: msg.retryCount,
+				}
 			}
 		}
 		chunk, ok := <-ch
@@ -1156,9 +1278,18 @@ func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
 			return aiChunkMsg{done: true}
 		}
 		if chunk.Err != nil {
-			return aiChunkMsg{err: chunk.Err}
+			return aiChunkMsg{
+				content:    msg.content,
+				err:        chunk.Err,
+				retryCount: msg.retryCount,
+			}
 		}
-		return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch}
+		return streamReaderMsg{
+			content:    msg.content + chunk.Content,
+			done:       chunk.Done,
+			ch:         ch,
+			retryCount: msg.retryCount,
+		}
 	}
 }
 
@@ -1171,10 +1302,10 @@ func countTokens(text string) int {
 	return int(float64(words)*1.3 + 0.5)
 }
 
-// filterThinkTags убирает <think>...</think> блоки и одиночные теги из текста
+// filterThinkTags убирает 	... блоки и одиночные теги из текста
 func filterThinkTags(text string) string {
 	result := text
-	// Убираем полные блоки <think>...</think>
+	// Убираем полные блоки 	...
 	for {
 		start := strings.Index(result, "<think>")
 		if start == -1 {
@@ -1182,7 +1313,7 @@ func filterThinkTags(text string) string {
 		}
 		end := strings.Index(result, "</think>")
 		if end == -1 {
-			// Незакрытый тег — обрезаем от <think> до конца
+			// Незакрытый тег — обрезаем от 	до конца
 			result = strings.TrimSpace(result[:start])
 			break
 		}
@@ -1198,13 +1329,15 @@ func filterThinkTags(text string) string {
 func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 	fullText := m.streaming
 	m.streaming = ""
+	m.retryCount = 0
+	m.pendingContent = ""
 
 	// Сохраняем финальную статистику
 	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
 		m.genSpeed = float64(m.genTokens) / elapsed
 	}
 
-	// В сессию сохраняем ОРИГИНАЛЬНЫЙ текст с <think> тегами
+	// В сессию сохраняем ОРИГИНАЛЬНЫЙ текст с 	тегами
 	// Это позволяет потом показать/скрыть reasoning
 	// Для tool calls парсим только видимую часть
 	visibleText := filterThinkTags(fullText)
@@ -1251,7 +1384,7 @@ func replaceThinkForSession(rawText, cleanText string) string {
 	return "<!--think:" + think + "-->\n" + cleanText
 }
 
-// extractThinkContent извлекает содержимое первого <think>...</think> блока
+// extractThinkContent извлекает содержимое первого 	... блока
 func extractThinkContent(text string) string {
 	start := strings.Index(text, "<think>")
 	if start == -1 {
@@ -2104,7 +2237,8 @@ func parsePullLine(line string) (status string, completed, total int64, done boo
 	status = obj.Status
 	completed = obj.Completed
 	total = obj.Total
-	done = obj.Status == "success"
+	// FIX: проверяем и done флаг и success статус
+	done = obj.Status == "success" || strings.Contains(line, `"done":true`)
 	return
 }
 
@@ -2154,6 +2288,8 @@ func (m Model) submitQuestionAnswer() (tea.Model, tea.Cmd) {
 	m.genStartTime = time.Now()
 	m.genTokens = 0
 	m.genSpeed = 0
+	m.retryCount = 0
+	m.pendingContent = ""
 
 	if wasToolCall {
 		// Ответ на ask_user — user роль с контекстом вопроса
@@ -2623,6 +2759,8 @@ func (m Model) loadSession(s *session.Session) (tea.Model, tea.Cmd) {
 	m.errMsg = ""
 	m.contextUsed = 0
 	m.thinkExpanded = make(map[int]bool)
+	m.retryCount = 0
+	m.pendingContent = ""
 
 	m.refreshViewport()
 	m.scrollToBottom = true
@@ -2713,7 +2851,7 @@ func truncate(s string, maxLen int) string {
 
 // ── Think-блоки ───────────────────────────────────────────────────────────────
 
-// isInsideThink возвращает true если текст заканчивается внутри <think> блока
+// isInsideThink возвращает true если текст заканчивается внутри 	блока
 func isInsideThink(text string) bool {
 	openCount := strings.Count(text, "<think>")
 	closeCount := strings.Count(text, "</think>")

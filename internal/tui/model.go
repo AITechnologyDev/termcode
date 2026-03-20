@@ -1899,8 +1899,9 @@ func (m Model) renderMessages() string {
 		}
 	}
 
-	// Текущий стриминг (анимация)
-	if m.streaming != "" && m.displayedLen > 0 {
+	// Текущий стриминг (анимация) — НЕ показываем если сообщение уже в сессии
+	// (это предотвращает дублирование после завершения анимации)
+	if m.streaming != "" && m.displayedLen > 0 && m.displayedLen < len(m.streaming) {
 		sb.WriteString(assistantLabelStyle.Render("◆ TermCode") + "\n")
 		
 		// Показываем только отображённую часть

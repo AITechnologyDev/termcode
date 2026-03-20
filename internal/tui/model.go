@@ -449,6 +449,12 @@ type Model struct {
 	retryCount     int        // текущая попытка
 	maxRetries     int        // максимум попыток (3)
 	pendingContent string     // накопленный контент для retry
+
+	// ── Новая логика: буферизация ответа и стриминг текста ────────────────
+	fullResponse    string     // полный накопленный ответ от AI
+	toolsExtracted  bool       // инструменты уже извлечены и выполнены
+	displayedLen    int        // сколько символов уже отображено (для посимвольного стриминга)
+	streamTicker    *time.Ticker // тикер для анимации стриминга
 }
 
 // New создаёт новую TUI модель
@@ -523,6 +529,9 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		screenHeightPx: heightPx,
 		maxRetries:     3,
 		retryCount:     0,
+		fullResponse:   "",
+		toolsExtracted: false,
+		displayedLen:   0,
 	}
 	m.paletteItems = m.buildPaletteItems()
 	m.thinkExpanded = make(map[int]bool)
@@ -917,8 +926,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case aiChunkMsg:
 		return m.handleAIChunk(msg)
 
-	case streamReaderMsg:
-		return m.updateStream(msg)
+	case streamTickMsg:
+		// Продолжаем анимацию стриминга текста
+		return m.handleStreamTick()
 
 	case toolDoneMsg:
 		return m.handleToolDone(msg)
@@ -998,6 +1008,9 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	m.errMsg = ""
 	m.currentState = stateThinking
 	m.streaming = ""
+	m.fullResponse = ""
+	m.toolsExtracted = false
+	m.displayedLen = 0
 	m.genStartTime = time.Now()
 	m.genTokens = 0
 	m.genSpeed = 0
@@ -1012,6 +1025,9 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, m.spinner.Tick)
 }
 
+// streamTickMsg — сообщение для продолжения анимации стриминга
+type streamTickMsg struct{}
+
 // streamAI запускает запрос к AI провайдеру с retry логикой
 func (m *Model) streamAI() tea.Cmd {
 	// Всегда отменяем предыдущий стрим перед созданием нового
@@ -1020,13 +1036,6 @@ func (m *Model) streamAI() tea.Cmd {
 	pc, _ := m.cfg.ActiveProviderConfig()
 	maxTokens := pc.GetMaxTokens()
 	contextLength := pc.GetContextLength()
-
-	// Если контекст ещё не детектировался для Ollama — запускаем детект параллельно
-	// и используем пока что значение из таблицы
-	var detectCmd tea.Cmd
-	if m.cfg.ActiveProvider == config.ProviderOllama && pc.ContextLength == 0 {
-		detectCmd = fetchContextLength(pc.BaseURL, pc.Model)
-	}
 
 	// Строим сообщения для API
 	rawMsgs := make([]ai.Message, 0, len(m.sess.Messages))
@@ -1096,7 +1105,7 @@ func (m *Model) streamAI() tea.Cmd {
 	currentRetry := m.retryCount
 	pendingContent := m.pendingContent
 
-	streamCmd := func() tea.Msg {
+	return func() tea.Msg {
 		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTokens, ctxLen)
 		if err != nil {
 			cancel()
@@ -1110,39 +1119,40 @@ func (m *Model) streamAI() tea.Cmd {
 			return aiChunkMsg{err: err, done: true}
 		}
 
-		select {
-		case <-ctx.Done():
-			return aiChunkMsg{done: true}
-		case chunk, ok := <-ch:
-			if !ok {
+		// Буферизуем ВЕСЬ ответ
+		var fullBuilder strings.Builder
+		if pendingContent != "" {
+			fullBuilder.WriteString(pendingContent)
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
 				return aiChunkMsg{done: true}
-			}
-			if chunk.Err != nil {
-				cancel()
-				// Проверяем — нужно ли retry
-				if currentRetry < m.maxRetries && isRetryableError(chunk.Err) {
+			case chunk, ok := <-ch:
+				if !ok {
+					// Стрим завершён — возвращаем полный ответ
 					return aiChunkMsg{
-						content:    pendingContent + chunk.Content,
-						err:        chunk.Err,
-						retryCount: currentRetry + 1,
+						content: fullBuilder.String(),
+						done:    true,
 					}
 				}
-				return aiChunkMsg{err: chunk.Err, done: true}
-			}
-			return streamReaderMsg{
-				content:    pendingContent + chunk.Content,
-				done:       chunk.Done,
-				ch:         ch,
-				ctx:        ctx,
-				retryCount: currentRetry,
+				if chunk.Err != nil {
+					cancel()
+					// Проверяем — нужно ли retry
+					if currentRetry < m.maxRetries && isRetryableError(chunk.Err) {
+						return aiChunkMsg{
+							content:    fullBuilder.String(),
+							err:        chunk.Err,
+							retryCount: currentRetry + 1,
+						}
+					}
+					return aiChunkMsg{err: chunk.Err, done: true}
+				}
+				fullBuilder.WriteString(chunk.Content)
 			}
 		}
 	}
-
-	if detectCmd != nil {
-		return tea.Batch(streamCmd, detectCmd)
-	}
-	return streamCmd
 }
 
 // isRetryableError проверяет, стоит ли повторять запрос при этой ошибке
@@ -1171,22 +1181,13 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-// streamReaderMsg — внутреннее сообщение для продолжения чтения стрима
-type streamReaderMsg struct {
-	content string
-	done    bool
-	ch      <-chan ai.StreamChunk
-	ctx     context.Context
-	retryCount int
-}
-
-// handleAIChunk обрабатывает кусок ответа AI с поддержкой retry
+// handleAIChunk обрабатывает полный ответ от AI (после буферизации)
 func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 	// Если это retry-сигнал — запускаем повторную попытку
 	if msg.err != nil && msg.retryCount > m.retryCount && msg.retryCount <= m.maxRetries {
 		m.retryCount = msg.retryCount
 		m.pendingContent = msg.content
-		m.streaming = msg.content
+		m.fullResponse = msg.content
 		m.errMsg = fmt.Sprintf(m.tr().RetryAttempt, m.retryCount, m.maxRetries)
 		m.refreshViewport()
 		
@@ -1203,6 +1204,7 @@ func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 		m.currentState = stateChat
 		m.errMsg = "AI error: " + msg.err.Error()
 		m.streaming = ""
+		m.fullResponse = ""
 		m.retryCount = 0
 		m.pendingContent = ""
 		m.refreshViewport()
@@ -1210,87 +1212,91 @@ func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.done {
-		return m.finalizeAIResponse()
+		// Полный ответ получен — сохраняем и начинаем стриминг
+		m.fullResponse = msg.content
+		m.genTokens = countTokens(m.fullResponse)
+		if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
+			m.genSpeed = float64(m.genTokens) / elapsed
+		}
+		
+		// Парсим инструменты сразу
+		return m.processFullResponse()
 	}
 
-	m.streaming += msg.content
-	m.genTokens += countTokens(msg.content)
-	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
-		m.genSpeed = float64(m.genTokens) / elapsed
-	}
-	m.refreshViewport()
-	m.scrollToBottom = true
-
+	// Не должно случиться — теперь ждём только done
 	return m, nil
 }
 
 // retryMsg — сигнал для запуска retry
 type retryMsg struct{}
 
-// updateStream читает следующий чанк из канала с поддержкой retry
-func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
-	// Обновляем pending content для возможного retry
-	m.pendingContent = msg.content
-	m.retryCount = msg.retryCount
-	
-	m.streaming = msg.content
-	m.genTokens += countTokens(msg.content)
-	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
-		m.genSpeed = float64(m.genTokens) / elapsed
+// processFullResponse обрабатывает полный ответ: парсит инструменты и начинает стриминг текста
+func (m Model) processFullResponse() (tea.Model, tea.Cmd) {
+	visibleText := filterThinkTags(m.fullResponse)
+	calls, cleanText := ai.ParseToolCalls(visibleText)
+
+	// Сохраняем в сессию
+	hasThink := extractThinkContent(m.fullResponse) != ""
+	hasVisible := strings.TrimSpace(cleanText) != ""
+	hasCalls := len(calls) > 0
+
+	if hasVisible || hasThink || hasCalls {
+		rawForSession := replaceThinkForSession(m.fullResponse, cleanText)
+		m.sess.AddMessage(session.RoleAssistant, rawForSession)
 	}
+
+	if len(calls) > 0 {
+		// Есть инструменты — выполняем первый сразу
+		call := calls[0]
+		m.toolsExtracted = true
+		
+		// Показываем что инструмент вызван
+		m.streaming = cleanText
+		m.refreshViewport()
+		m.scrollToBottom = true
+
+		return m, func() tea.Msg {
+			result := m.executor.Dispatch(call.Tool, call.Params)
+			return toolDoneMsg{call: call, result: result}
+		}
+	}
+
+	// Нет инструментов — стримим текст посимвольно для эффекта
+	m.currentState = stateChat
+	m.streaming = cleanText
+	m.displayedLen = 0
+	
+	// Запускаем тикер для анимации стриминга
+	return m, tea.Every(10*time.Millisecond, func(t time.Time) tea.Msg {
+		return streamTickMsg{}
+	})
+}
+
+// handleStreamTick обрабатывает тик анимации стриминга текста
+func (m Model) handleStreamTick() (tea.Model, tea.Cmd) {
+	// Показываем по 3 символа за тик для плавности
+	charsPerTick := 3
+	end := m.displayedLen + charsPerTick
+	if end > len(m.streaming) {
+		end = len(m.streaming)
+	}
+	
+	m.displayedLen = end
+	
+	// Обновляем viewport чтобы показать новые символы
 	m.refreshViewport()
 	m.scrollToBottom = true
-
-	if msg.done {
-		return m.finalizeAIResponse()
+	
+	// Если весь текст показан — останавливаем анимацию
+	if m.displayedLen >= len(m.streaming) {
+		m.streaming = "" // сбрасываем чтобы не дублировать в renderMessages
+		return m, nil
 	}
-
-	ch := msg.ch
-	ctx := msg.ctx
-	return m, func() tea.Msg {
-		// Уважаем отмену — если контекст закрыт, завершаем стрим
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return aiChunkMsg{done: true}
-			case chunk, ok := <-ch:
-				if !ok {
-					return aiChunkMsg{done: true}
-				}
-				if chunk.Err != nil {
-					return aiChunkMsg{
-						content:    msg.content,
-						err:        chunk.Err,
-						retryCount: msg.retryCount,
-					}
-				}
-				return streamReaderMsg{
-					content:    msg.content + chunk.Content,
-					done:       chunk.Done,
-					ch:         ch,
-					ctx:        ctx,
-					retryCount: msg.retryCount,
-				}
-			}
-		}
-		chunk, ok := <-ch
-		if !ok {
-			return aiChunkMsg{done: true}
-		}
-		if chunk.Err != nil {
-			return aiChunkMsg{
-				content:    msg.content,
-				err:        chunk.Err,
-				retryCount: msg.retryCount,
-			}
-		}
-		return streamReaderMsg{
-			content:    msg.content + chunk.Content,
-			done:       chunk.Done,
-			ch:         ch,
-			retryCount: msg.retryCount,
-		}
-	}
+	
+	// Продолжаем анимацию
+	return m, tea.Tick(10*time.Millisecond, func(t time.Time) tea.Msg {
+		return streamTickMsg{}
+	})
 }
 
 // countTokens приближённо считает токены по словам (1 слово ≈ 1.3 токена)
@@ -1302,10 +1308,10 @@ func countTokens(text string) int {
 	return int(float64(words)*1.3 + 0.5)
 }
 
-// filterThinkTags убирает 	... блоки и одиночные теги из текста
+// filterThinkTags убирает <think>...</think> блоки и одиночные теги из текста
 func filterThinkTags(text string) string {
 	result := text
-	// Убираем полные блоки 	...
+	// Убираем полные блоки <think>...</think>
 	for {
 		start := strings.Index(result, "<think>")
 		if start == -1 {
@@ -1313,7 +1319,7 @@ func filterThinkTags(text string) string {
 		}
 		end := strings.Index(result, "</think>")
 		if end == -1 {
-			// Незакрытый тег — обрезаем от 	до конца
+			// Незакрытый тег — обрезаем от <think> до конца
 			result = strings.TrimSpace(result[:start])
 			break
 		}
@@ -1337,15 +1343,20 @@ func (m Model) finalizeAIResponse() (tea.Model, tea.Cmd) {
 		m.genSpeed = float64(m.genTokens) / elapsed
 	}
 
-	// В сессию сохраняем ОРИГИНАЛЬНЫЙ текст с 	тегами
+	// В сессию сохраняем ОРИГИНАЛЬНЫЙ текст с <think> тегами
 	// Это позволяет потом показать/скрыть reasoning
 	// Для tool calls парсим только видимую часть
 	visibleText := filterThinkTags(fullText)
 	calls, cleanText := ai.ParseToolCalls(visibleText)
 
-	// Сохраняем в сессию — но только если есть что сохранять
-	rawForSession := replaceThinkForSession(fullText, cleanText)
-	if strings.TrimSpace(cleanText) != "" || extractThinkContent(fullText) != "" {
+	// FIX: Сохраняем в сессию если есть ЛЮБОЙ контент (даже только think)
+	// или есть tool calls
+	hasThink := extractThinkContent(fullText) != ""
+	hasVisible := strings.TrimSpace(cleanText) != ""
+	hasCalls := len(calls) > 0
+
+	if hasVisible || hasThink || hasCalls {
+		rawForSession := replaceThinkForSession(fullText, cleanText)
 		m.sess.AddMessage(session.RoleAssistant, rawForSession)
 	}
 
@@ -1381,10 +1392,14 @@ func replaceThinkForSession(rawText, cleanText string) string {
 		return cleanText
 	}
 	// Формат: <!--think:CONTENT-->\ncleanText
+	// Если cleanText пустой — возвращаем только think
+	if strings.TrimSpace(cleanText) == "" {
+		return "<!--think:" + think + "-->"
+	}
 	return "<!--think:" + think + "-->\n" + cleanText
 }
 
-// extractThinkContent извлекает содержимое первого 	... блока
+// extractThinkContent извлекает содержимое первого <think>...</think> блока
 func extractThinkContent(text string) string {
 	start := strings.Index(text, "<think>")
 	if start == -1 {
@@ -1884,14 +1899,19 @@ func (m Model) renderMessages() string {
 		}
 	}
 
-	// Текущий стриминг
-	if m.streaming != "" {
+	// Текущий стриминг (анимация)
+	if m.streaming != "" && m.displayedLen > 0 {
 		sb.WriteString(assistantLabelStyle.Render("◆ TermCode") + "\n")
-
+		
+		// Показываем только отображённую часть
+		displayText := m.streaming
+		if m.displayedLen < len(m.streaming) {
+			displayText = m.streaming[:m.displayedLen]
+		}
+		
 		// Определяем — идёт ли сейчас think-фаза
-		streamText := m.streaming
-		inThink := isInsideThink(streamText)
-		visible := filterThinkTags(streamText)
+		inThink := isInsideThink(displayText)
+		visible := filterThinkTags(displayText)
 
 		if inThink {
 			// Показываем индикатор что модель "думает"
@@ -2285,6 +2305,9 @@ func (m Model) submitQuestionAnswer() (tea.Model, tea.Cmd) {
 	m.currentState = stateThinking
 	m = m.resize()
 	m.streaming = ""
+	m.fullResponse = ""
+	m.toolsExtracted = false
+	m.displayedLen = 0
 	m.genStartTime = time.Now()
 	m.genTokens = 0
 	m.genSpeed = 0
@@ -2451,6 +2474,9 @@ func (m Model) buildPaletteItems() []paletteItem {
 				pc, _ := m.cfg.ActiveProviderConfig()
 				m.sess = session.New(m.workDir, string(m.cfg.ActiveProvider), pc.Model)
 				m.streaming = ""
+				m.fullResponse = ""
+				m.toolsExtracted = false
+				m.displayedLen = 0
 				m.errMsg = ""
 				m.currentState = stateChat
 				m.paletteFilter = ""
@@ -2756,6 +2782,9 @@ func (m Model) loadSession(s *session.Session) (tea.Model, tea.Cmd) {
 	m.sess = s
 	m.currentState = stateChat
 	m.streaming = ""
+	m.fullResponse = ""
+	m.toolsExtracted = false
+	m.displayedLen = 0
 	m.errMsg = ""
 	m.contextUsed = 0
 	m.thinkExpanded = make(map[int]bool)
@@ -2851,7 +2880,7 @@ func truncate(s string, maxLen int) string {
 
 // ── Think-блоки ───────────────────────────────────────────────────────────────
 
-// isInsideThink возвращает true если текст заканчивается внутри 	блока
+// isInsideThink возвращает true если текст заканчивается внутри <think> блока
 func isInsideThink(text string) bool {
 	openCount := strings.Count(text, "<think>")
 	closeCount := strings.Count(text, "</think>")

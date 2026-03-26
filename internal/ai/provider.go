@@ -3,6 +3,7 @@ package ai
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,13 +38,15 @@ type Provider interface {
 func New(cfg config.ProviderConfig, provider config.Provider) (Provider, error) {
 	switch provider {
 	case config.ProviderOllama:
+		// Локальный и cloud — оба используют нативный Ollama API (/api/chat)
+		// Для cloud просто добавляется Authorization header
 		return &OllamaProvider{cfg: cfg}, nil
 	case config.ProviderOpenAI, config.ProviderOpenRouter:
 		return &OpenAIProvider{cfg: cfg, providerName: string(provider)}, nil
 	case config.ProviderAnthropic:
 		return &AnthropicProvider{cfg: cfg}, nil
 	default:
-		return nil, fmt.Errorf("неизвестный провайдер: %s", provider)
+		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
 }
 
@@ -199,6 +202,9 @@ type ollamaStreamResponse struct {
 }
 
 func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int, contextLength int) (<-chan StreamChunk, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = cancel // caller uses cancelStream() in model.go
+
 	msgs := make([]ollamaMessage, 0, len(messages)+1)
 	if system != "" {
 		msgs = append(msgs, ollamaMessage{Role: "system", Content: system})
@@ -223,12 +229,22 @@ func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int
 		return nil, err
 	}
 
-	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/api/chat"
-	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	base := strings.TrimRight(p.cfg.BaseURL, "/")
+	var chatURL string
+	if strings.HasSuffix(base, "/api") {
+		chatURL = base + "/chat"
+	} else {
+		chatURL = base + "/api/chat"
+	}
+	// Используем NewRequestWithContext чтобы отмена контекста обрывала соединение
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if p.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	}
 
 	ch := make(chan StreamChunk, 32)
 
@@ -248,27 +264,29 @@ func (p *OllamaProvider) Stream(messages []Message, system string, maxTokens int
 			return
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
-		// 2MB буфер — достаточно для любого ответа включая большие файлы
-		scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				lineStr := strings.TrimSpace(string(line))
+				if lineStr != "" {
+					var chunk ollamaStreamResponse
+					if jsonErr := json.Unmarshal([]byte(lineStr), &chunk); jsonErr == nil {
+						ch <- StreamChunk{Content: chunk.Message.Content, Done: chunk.Done}
+						if chunk.Done {
+							return
+						}
+					}
+				}
 			}
-			var chunk ollamaStreamResponse
-			if err := json.Unmarshal([]byte(line), &chunk); err != nil {
-				// Логируем ошибку парсинга но продолжаем
-				ch <- StreamChunk{Err: fmt.Errorf("ollama parse: %w (line: %.100s)", err, line)}
+			if err != nil {
+				if err == io.EOF {
+					ch <- StreamChunk{Done: true}
+				} else {
+					ch <- StreamChunk{Err: fmt.Errorf("ollama stream: %w", err)}
+				}
 				return
 			}
-			ch <- StreamChunk{Content: chunk.Message.Content, Done: chunk.Done}
-			if chunk.Done {
-				return
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- StreamChunk{Err: fmt.Errorf("ollama stream: %w", err)}
 		}
 	}()
 
@@ -301,7 +319,14 @@ type openAIMessage struct {
 type openAIStreamResponse struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -329,7 +354,7 @@ func (p *OpenAIProvider) Stream(messages []Message, system string, maxTokens int
 	}
 
 	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -356,33 +381,76 @@ func (p *OpenAIProvider) Stream(messages []Message, system string, maxTokens int
 			return
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				ch <- StreamChunk{Done: true}
-				return
-			}
-			var chunk openAIStreamResponse
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue
-			}
-			if len(chunk.Choices) > 0 {
-				content := chunk.Choices[0].Delta.Content
-				done := chunk.Choices[0].FinishReason != nil
-				ch <- StreamChunk{Content: content, Done: done}
-				if done {
+		reader := bufio.NewReader(resp.Body)
+		// Аккумулятор для native tool_calls (Nemotron, GPT-4 и др.)
+		toolCallNames := make(map[int]string)
+		toolCallArgs := make(map[int]string)
+
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				lineStr := strings.TrimSpace(string(line))
+				if !strings.HasPrefix(lineStr, "data: ") {
+					if err != nil {
+						break
+					}
+					continue
+				}
+				data := strings.TrimPrefix(lineStr, "data: ")
+				if data == "[DONE]" {
+					// Если были накоплены native tool_calls — конвертируем в наш формат
+					if len(toolCallNames) > 0 {
+						for idx, name := range toolCallNames {
+							args := toolCallArgs[idx]
+							toolJSON := fmt.Sprintf("\n```tool\n{\"tool\": %q, \"params\": %s}\n```\n",
+								name, args)
+							ch <- StreamChunk{Content: toolJSON}
+						}
+					}
+					ch <- StreamChunk{Done: true}
 					return
 				}
+				var chunk openAIStreamResponse
+				if jsonErr := json.Unmarshal([]byte(data), &chunk); jsonErr == nil {
+					if len(chunk.Choices) > 0 {
+						delta := chunk.Choices[0].Delta
+						// Обычный текстовый контент
+						if delta.Content != "" {
+							ch <- StreamChunk{Content: delta.Content}
+						}
+						// Native tool_calls (Nemotron, GPT-4 и др.)
+						for _, tc := range delta.ToolCalls {
+							if tc.Function.Name != "" {
+								toolCallNames[tc.Index] = tc.Function.Name
+							}
+							if tc.Function.Arguments != "" {
+								toolCallArgs[tc.Index] += tc.Function.Arguments
+							}
+						}
+						done := chunk.Choices[0].FinishReason != nil
+						if done {
+							// Эмитим накопленные tool_calls перед Done
+							for idx, name := range toolCallNames {
+								args := toolCallArgs[idx]
+								if args == "" {
+									args = "{}"
+								}
+								toolJSON := fmt.Sprintf("\n```tool\n{\"tool\": %q, \"params\": %s}\n```\n",
+									name, args)
+								ch <- StreamChunk{Content: toolJSON}
+							}
+							ch <- StreamChunk{Done: true}
+							return
+						}
+					}
+				}
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- StreamChunk{Err: err}
+			if err != nil {
+				if err != io.EOF {
+					ch <- StreamChunk{Err: err}
+				}
+				return
+			}
 		}
 	}()
 
@@ -466,32 +534,35 @@ func (p *AnthropicProvider) Stream(messages []Message, system string, maxTokens 
 			return
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-
-			var event anthropicStreamEvent
-			if err := json.Unmarshal([]byte(data), &event); err != nil {
-				continue
-			}
-
-			switch event.Type {
-			case "content_block_delta":
-				if event.Delta != nil && event.Delta.Type == "text_delta" {
-					ch <- StreamChunk{Content: event.Delta.Text}
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				lineStr := strings.TrimSpace(string(line))
+				if strings.HasPrefix(lineStr, "data: ") {
+					data := strings.TrimPrefix(lineStr, "data: ")
+					var event anthropicStreamEvent
+					if jsonErr := json.Unmarshal([]byte(data), &event); jsonErr == nil {
+						switch event.Type {
+						case "content_block_delta":
+							if event.Delta != nil && event.Delta.Type == "text_delta" {
+								ch <- StreamChunk{Content: event.Delta.Text}
+							}
+						case "message_stop":
+							ch <- StreamChunk{Done: true}
+							return
+						}
+					}
 				}
-			case "message_stop":
-				ch <- StreamChunk{Done: true}
+			}
+			if err != nil {
+				if err != io.EOF {
+					ch <- StreamChunk{Err: err}
+				} else {
+					ch <- StreamChunk{Done: true}
+				}
 				return
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- StreamChunk{Err: err}
 		}
 	}()
 

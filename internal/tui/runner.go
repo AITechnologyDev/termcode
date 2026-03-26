@@ -7,7 +7,7 @@ import (
 // Start запускает TUI
 func Start(m *Model) error {
 	p := tea.NewProgram(
-		*m,
+		m, // pointer — не теряем состояние
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)

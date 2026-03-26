@@ -45,13 +45,15 @@ func ParseToolCalls(text string) (calls []ToolCallRequest, cleanText string) {
 	remaining, c2 := parseFormatBacktickNamed(remaining)
 	remaining, c3 := parseFormatBracketTool(remaining)
 	remaining, c4 := parseFormatActionJSON(remaining)
-	remaining, c5 := parseFormatParenParams(remaining) // read_file(params={...})
+	remaining, c5 := parseFormatParenParams(remaining)
+	remaining, c6 := parseFormatNemotron(remaining)
 
 	calls = append(calls, c1...)
 	calls = append(calls, c2...)
 	calls = append(calls, c3...)
 	calls = append(calls, c4...)
 	calls = append(calls, c5...)
+	calls = append(calls, c6...)
 
 	cleanText = strings.TrimSpace(remaining)
 	return calls, cleanText
@@ -94,7 +96,7 @@ func parseFormatBacktickTool(text string) (remaining string, calls []ToolCallReq
 
 // ── Формат 2: ```read_file\n{...}\n``` (имя инструмента в теге) ──────────────
 
-var backtickNamedRe = regexp.MustCompile("(?s)```(read_file|write_file|patch_file|list_files|run_command)\n(.*?)```")
+var backtickNamedRe = regexp.MustCompile("(?s)```(read_file|write_file|patch_file|list_files|run_command|web_search|fetch_page|download_file|ask_user)\n(.*?)```")
 
 func parseFormatBacktickNamed(text string) (remaining string, calls []ToolCallRequest) {
 	matches := backtickNamedRe.FindAllStringSubmatchIndex(text, -1)
@@ -119,45 +121,49 @@ func parseFormatBacktickNamed(text string) (remaining string, calls []ToolCallRe
 	return sb.String(), calls
 }
 
-// ── Формат 3: [tool:read_file]\n{"path": "..."} (GLM-4 стиль) ───────────────
-
-// bracketToolRe — однострочный JSON после [tool:name]
-var bracketToolRe = regexp.MustCompile(`(?m)\[tool:(\w+)\]\s*\n(\{[^\n]+\})`)
+// ── Формат 3: [tool:read_file]\n{"path": "..."} (GLM-4/5 стиль) ───────────────
 
 // bracketToolMultiRe — многострочный JSON после [tool:name]
-var bracketToolMultiRe = regexp.MustCompile(`(?s)\[tool:(\w+)\]\s*\n(\{.*?\})`)
+var bracketToolMultiRe = regexp.MustCompile(`(?s)\[tool:(\w+)\][^\{]*(\{.*?\})`)
+
+// bracketToolInlineRe — [tool:name](path="...") или [tool:name]: текст
+var bracketToolInlineRe = regexp.MustCompile(`\[tool:(\w+)\](?:\(([^)]*)\))?`)
 
 func parseFormatBracketTool(text string) (remaining string, calls []ToolCallRequest) {
-	// Сначала пробуем многострочный вариант
+	// Сначала пробуем вариант с JSON блоком
 	matches := bracketToolMultiRe.FindAllStringSubmatchIndex(text, -1)
-	if len(matches) == 0 {
-		return text, nil
-	}
+	if len(matches) > 0 {
+		var sb strings.Builder
+		pos := 0
+		for _, m := range matches {
+			sb.WriteString(text[pos:m[0]])
+			toolName := text[m[2]:m[3]]
+			jsonStr := strings.TrimSpace(text[m[4]:m[5]])
+			pos = m[1]
 
-	var sb strings.Builder
-	pos := 0
-	for _, m := range matches {
-		sb.WriteString(text[pos:m[0]])
-		toolName := text[m[2]:m[3]]
-		jsonStr := strings.TrimSpace(text[m[4]:m[5]])
-		pos = m[1]
-
-		params := jsonToStringMap(jsonStr)
-		if params != nil {
-			calls = append(calls, ToolCallRequest{Tool: toolName, Params: params})
+			params := jsonToStringMap(jsonStr)
+			if params != nil {
+				calls = append(calls, ToolCallRequest{Tool: toolName, Params: params})
+			}
 		}
+		sb.WriteString(text[pos:])
+		return sb.String(), calls
 	}
-	sb.WriteString(text[pos:])
-	return sb.String(), calls
+
+	// Fallback: просто убираем [tool:name] теги из текста даже без JSON
+	remaining = bracketToolInlineRe.ReplaceAllStringFunc(text, func(s string) string {
+		return "" // убираем из cleanText
+	})
+	return remaining, calls
 }
 
 // ── Формат 5: tool_name(params={"key":"val"}) или read_file(path="go.mod") ────
 
 // parenParamsRe ловит: read_file(params={"path":"go.mod"})
-var parenParamsRe = regexp.MustCompile(`(?s)(read_file|write_file|patch_file|list_files|run_command)\s*\(\s*params\s*=\s*(\{.*?\})\s*\)`)
+var parenParamsRe = regexp.MustCompile(`(?s)(read_file|write_file|patch_file|list_files|run_command|web_search|fetch_page|download_file|ask_user)\s*\(\s*params\s*=\s*(\{.*?\})\s*\)`)
 
 // parenSimpleRe ловит: read_file(path="go.mod", ...)  — без обёртки params=
-var parenSimpleRe = regexp.MustCompile(`(?m)^(read_file|write_file|patch_file|list_files|run_command)\s*\(([^)]+)\)`)
+var parenSimpleRe = regexp.MustCompile(`(?m)^(read_file|write_file|patch_file|list_files|run_command|web_search|fetch_page|download_file|ask_user)\s*\(([^)]+)\)`)
 
 func parseFormatParenParams(text string) (remaining string, calls []ToolCallRequest) {
 	// Вариант A: read_file(params={"path":"go.mod"})
@@ -299,5 +305,41 @@ func ContainsToolCall(text string) bool {
 	return strings.Contains(text, "```tool") ||
 		strings.Contains(text, "[tool:") ||
 		strings.Contains(text, `"action":`) ||
+		strings.Contains(text, "[tool#") ||
 		parenParamsRe.MatchString(text)
+}
+
+// ── Формат 6: [tool#0 name] get_math_answer\n[tool#0 args] {...} (Nemotron) ───
+
+// Go regexp не поддерживает backreferences — парсим вручную
+var nemotronNameRe = regexp.MustCompile(`\[tool#(\d+) name\]\s*(\w+)`)
+var nemotronArgsRe = regexp.MustCompile(`(?s)\[tool#(\d+) args\]\s*(\{.*?\})`)
+
+func parseFormatNemotron(text string) (remaining string, calls []ToolCallRequest) {
+	// Собираем имена инструментов
+	names := make(map[string]string)
+	for _, m := range nemotronNameRe.FindAllStringSubmatch(text, -1) {
+		names[m[1]] = m[2] // idx → name
+	}
+	if len(names) == 0 {
+		return text, nil
+	}
+	// Собираем аргументы и строим вызовы
+	remaining = text
+	for _, m := range nemotronArgsRe.FindAllStringSubmatch(text, -1) {
+		idx := m[1]
+		jsonStr := strings.TrimSpace(m[2])
+		name, ok := names[idx]
+		if !ok {
+			continue
+		}
+		params := jsonToStringMap(jsonStr)
+		if params != nil {
+			calls = append(calls, ToolCallRequest{Tool: name, Params: params})
+		}
+	}
+	// Убираем все [tool#N ...] теги из текста
+	remaining = nemotronNameRe.ReplaceAllString(remaining, "")
+	remaining = nemotronArgsRe.ReplaceAllString(remaining, "")
+	return remaining, calls
 }

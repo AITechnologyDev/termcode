@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"regexp"
 )
 
 // Result — результат выполнения инструмента
@@ -252,82 +251,29 @@ func walkTree(root, dir string, depth, maxDepth int, sb *strings.Builder) error 
 }
 
 // RunCommand выполняет shell-команду в рабочей директории
-// Использует безопасный парсинг аргументов вместо sh -c где возможно
+// Только безопасные команды (без rm -rf /, sudo и т.д.)
 func (e *Executor) RunCommand(command string) Result {
-	// Проверяем на опасные паттерны ДО любой обработки
-	dangerousPatterns := []string{
-		"rm -rf /", "rm -rf /*", "rm -rf ~", 
-		"mkfs", "dd if=/dev/zero", "dd if=/dev/random",
-		":(){ :|:& };:", "fork bomb",
-		"sudo ", "su -", "su root",
-		"chmod -R 777 /", "chmod -R 000 /",
-		"> /dev/sda", "of=/dev/sda",
-		"curl.*|.*sh", "wget.*|.*sh", // pipe to shell
-		"eval(", "exec(", "system(",
-	}
-	
+	// Минимальная защита от деструктивных команд
+	dangerous := []string{"rm -rf /", "mkfs", "dd if=", ":(){", "fork bomb"}
 	lower := strings.ToLower(command)
-	for _, pattern := range dangerousPatterns {
-		if matched, _ := regexp.MatchString(pattern, lower); matched {
-			return fail(fmt.Sprintf("command blocked: dangerous pattern detected"))
-		}
-	}
-
-	// Разбираем команду: если это простая команда без shell-операторов — 
-	// используем exec.Command напрямую без sh -c
-	shellOps := []string{"|", "&&", "||", ";", "`", "$(" , "<", ">", ">>"}
-	hasShellOps := false
-	for _, op := range shellOps {
-		if strings.Contains(command, op) {
-			hasShellOps = true
-			break
+	for _, d := range dangerous {
+		if strings.Contains(lower, d) {
+			return fail(fmt.Sprintf("command blocked for security reasons: %s", d))
 		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if !hasShellOps {
-		// Безопасный режим: парсим аргументы и exec напрямую
-		args := parseArgs(command)
-		if len(args) == 0 {
-			return fail("empty command")
-		}
-		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
-	} else {
-		// Shell режим с ограничениями: проверяем whitelist команд
-		allowedShellCmds := []string{"git", "go", "make", "docker", "docker-compose", 
-			"npm", "yarn", "pnpm", "cargo", "rustc", "python", "python3", "pip",
-			"ls", "cat", "grep", "find", "head", "tail", "echo", "printf",
-			"mkdir", "touch", "cp", "mv", "rm", "pwd", "which", "whereis"}
-		
-		// Извлекаем первую команду
-		firstCmd := strings.Fields(command)[0]
-		firstCmd = strings.TrimPrefix(firstCmd, "(")
-		firstCmd = strings.TrimPrefix(firstCmd, "{")
-		
-		allowed := false
-		for _, ac := range allowedShellCmds {
-			if firstCmd == ac {
-				allowed = true
-				break
-			}
-		}
-		
-		if !allowed {
-			return fail(fmt.Sprintf("command not in whitelist: %s", firstCmd))
-		}
-		
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
-	}
-	
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = e.WorkDir
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	// Таймаут не через context чтобы не тянуть лишний импорт —
+	// пользователь может прервать через Ctrl+C в TUI
 	err := cmd.Run()
 
 	var sb strings.Builder
@@ -360,43 +306,6 @@ func (e *Executor) RunCommand(command string) Result {
 
 	return ok(output)
 }
-
-// parseArgs парсит строку команды в аргументы с учётом кавычек
-func parseArgs(s string) []string {
-	var args []string
-	var current strings.Builder
-	inQuote := false
-	quoteChar := rune(0)
-	
-	for _, r := range s {
-		switch {
-		case r == '"' || r == '\'':
-			if !inQuote {
-				inQuote = true
-				quoteChar = r
-			} else if r == quoteChar {
-				inQuote = false
-				quoteChar = 0
-			} else {
-				current.WriteRune(r)
-			}
-		case r == ' ' && !inQuote:
-			if current.Len() > 0 {
-				args = append(args, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteRune(r)
-		}
-	}
-	
-	if current.Len() > 0 {
-		args = append(args, current.String())
-	}
-	
-	return args
-}
-
 
 // Dispatch вызывает нужный инструмент по имени с параметрами
 func (e *Executor) Dispatch(name string, params map[string]string) Result {

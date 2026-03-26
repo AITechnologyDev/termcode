@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -926,9 +927,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case aiChunkMsg:
 		return m.handleAIChunk(msg)
 
-	case streamTickMsg:
-		// Продолжаем анимацию стриминга текста
-		return m.handleStreamTick()
+	case streamReaderMsg:
+		return m.updateStream(msg)
+
+
+	case retryMsg:
+		// Повторная попытка — перезапускаем стрим
+		m.streaming = m.pendingContent
+		m.refreshViewport()
+		return m, tea.Batch(m.streamAI(), m.spinner.Tick)
 
 	case toolDoneMsg:
 		return m.handleToolDone(msg)
@@ -1028,14 +1035,79 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 // streamTickMsg — сообщение для продолжения анимации стриминга
 type streamTickMsg struct{}
 
-// streamAI запускает запрос к AI провайдеру с retry логикой
+// streamReaderMsg — рекурсивное сообщение для чтения стрима чанк за чанком
+type streamReaderMsg struct {
+	content string
+	done    bool
+	ch      <-chan ai.StreamChunk
+	ctx     context.Context
+}
+
+// updateStream читает следующий чанк из канала
+func (m Model) updateStream(msg streamReaderMsg) (tea.Model, tea.Cmd) {
+	// Стрипаем ANSI escape коды — некоторые модели их возвращают
+	clean := stripANSI(msg.content)
+	m.streaming += clean
+	m.genTokens += countTokens(clean)
+	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
+		m.genSpeed = float64(m.genTokens) / elapsed
+	}
+	m.refreshViewport()
+	m.scrollToBottom = true
+
+	if msg.done {
+		return m.finalizeAIResponse()
+	}
+
+	ch := msg.ch
+	ctx := msg.ctx
+	return m, func() tea.Msg {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return aiChunkMsg{done: true}
+			case chunk, ok := <-ch:
+				if !ok {
+					return aiChunkMsg{done: true}
+				}
+				if chunk.Err != nil {
+					return aiChunkMsg{err: chunk.Err}
+				}
+				return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch, ctx: ctx}
+			case <-time.After(120 * time.Second):
+				// Защита от зависшего стрима
+				return aiChunkMsg{err: fmt.Errorf("stream timeout: no response for 2 minutes")}
+			}
+		}
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				return aiChunkMsg{done: true}
+			}
+			if chunk.Err != nil {
+				return aiChunkMsg{err: chunk.Err}
+			}
+			return streamReaderMsg{content: chunk.Content, done: chunk.Done, ch: ch}
+		case <-time.After(120 * time.Second):
+			return aiChunkMsg{err: fmt.Errorf("stream timeout: no response for 2 minutes")}
+		}
+	}
+}
+
+// streamAI запускает запрос к AI провайдеру
 func (m *Model) streamAI() tea.Cmd {
-	// Всегда отменяем предыдущий стрим перед созданием нового
 	m.cancelStream()
-	
+
 	pc, _ := m.cfg.ActiveProviderConfig()
 	maxTokens := pc.GetMaxTokens()
 	contextLength := pc.GetContextLength()
+
+	// Автодетект контекста для Ollama
+	var detectCmd tea.Cmd
+	if m.cfg.ActiveProvider == config.ProviderOllama && pc.ContextLength == 0 &&
+		!strings.Contains(pc.BaseURL, "ollama.com") {
+		detectCmd = fetchContextLength(pc.BaseURL, pc.Model)
+	}
 
 	// Строим сообщения для API
 	rawMsgs := make([]ai.Message, 0, len(m.sess.Messages))
@@ -1044,13 +1116,9 @@ func (m *Model) streamAI() tea.Cmd {
 			continue
 		}
 		role := string(msg.Role)
-		// Ollama и локальные модели не поддерживают роль "tool"
-		// Конвертируем tool results в user сообщения
 		if msg.Role == session.RoleTool {
 			role = "user"
 		}
-		// Объединяем подряд идущие user сообщения — некоторые модели
-		// не принимают два user сообщения подряд без assistant между ними
 		if role == "user" && len(rawMsgs) > 0 && rawMsgs[len(rawMsgs)-1].Role == "user" {
 			rawMsgs[len(rawMsgs)-1].Content += "\n" + msg.Content
 			continue
@@ -1072,7 +1140,6 @@ func (m *Model) streamAI() tea.Cmd {
 		langInstruction = "\n\nIMPORTANT: Always respond in English language."
 	}
 
-	// Собираем дополнительный контекст из профиля пользователя
 	var extraContext string
 	if m.cfg.UserProfile != "" {
 		extraContext += "\n\n## About the user\n" + m.cfg.UserProfile
@@ -1092,67 +1159,44 @@ func (m *Model) streamAI() tea.Cmd {
 	m.contextUsed = ai.SumTokens(apiMsgs) + ai.EstimateTokens(systemPrompt)
 	m.contextLimit = contextLength
 
-	// Создаём новый контекст для стрима
 	ctx, cancel := context.WithCancel(context.Background())
-	
-	// Сохраняем cancel функцию через atomic pointer
 	m.streamMu.Lock()
 	m.streamCancel.Store(&cancel)
 	m.streamMu.Unlock()
 
 	provider := m.provider
-	ctxLen := contextLength // захватываем для горутины
-	currentRetry := m.retryCount
-	pendingContent := m.pendingContent
+	ctxLen := contextLength
 
-	return func() tea.Msg {
+	streamCmd := func() tea.Msg {
 		ch, err := provider.Stream(apiMsgs, systemPrompt, maxTokens, ctxLen)
 		if err != nil {
 			cancel()
-			// Проверяем — нужно ли retry
-			if currentRetry < m.maxRetries && isRetryableError(err) {
-				return aiChunkMsg{
-					err:        err,
-					retryCount: currentRetry + 1,
-				}
-			}
-			return aiChunkMsg{err: err, done: true}
+			return aiChunkMsg{err: err}
 		}
-
-		// Буферизуем ВЕСЬ ответ
-		var fullBuilder strings.Builder
-		if pendingContent != "" {
-			fullBuilder.WriteString(pendingContent)
-		}
-
-		for {
-			select {
-			case <-ctx.Done():
+		// Читаем первый чанк и запускаем рекурсивную цепочку
+		select {
+		case <-ctx.Done():
+			return aiChunkMsg{done: true}
+		case chunk, ok := <-ch:
+			if !ok {
 				return aiChunkMsg{done: true}
-			case chunk, ok := <-ch:
-				if !ok {
-					// Стрим завершён — возвращаем полный ответ
-					return aiChunkMsg{
-						content: fullBuilder.String(),
-						done:    true,
-					}
-				}
-				if chunk.Err != nil {
-					cancel()
-					// Проверяем — нужно ли retry
-					if currentRetry < m.maxRetries && isRetryableError(chunk.Err) {
-						return aiChunkMsg{
-							content:    fullBuilder.String(),
-							err:        chunk.Err,
-							retryCount: currentRetry + 1,
-						}
-					}
-					return aiChunkMsg{err: chunk.Err, done: true}
-				}
-				fullBuilder.WriteString(chunk.Content)
+			}
+			if chunk.Err != nil {
+				return aiChunkMsg{err: chunk.Err}
+			}
+			return streamReaderMsg{
+				content: chunk.Content,
+				done:    chunk.Done,
+				ch:      ch,
+				ctx:     ctx,
 			}
 		}
 	}
+
+	if detectCmd != nil {
+		return tea.Batch(streamCmd, detectCmd)
+	}
+	return streamCmd
 }
 
 // isRetryableError проверяет, стоит ли повторять запрос при этой ошибке
@@ -1183,24 +1227,27 @@ func isRetryableError(err error) bool {
 
 // handleAIChunk обрабатывает полный ответ от AI (после буферизации)
 func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
-	// Если это retry-сигнал — запускаем повторную попытку
-	if msg.err != nil && msg.retryCount > m.retryCount && msg.retryCount <= m.maxRetries {
-		m.retryCount = msg.retryCount
-		m.pendingContent = msg.content
-		m.fullResponse = msg.content
-		m.errMsg = fmt.Sprintf(m.tr().RetryAttempt, m.retryCount, m.maxRetries)
-		m.refreshViewport()
-		
-		// Небольшая задержка перед retry (экспоненциальная backoff)
-		delay := time.Duration(m.retryCount) * 500 * time.Millisecond
-		return m, tea.Tick(delay, func(time.Time) tea.Msg {
-			return retryMsg{}
-		})
-	}
-	
 	if msg.err != nil {
-		// Финальная ошибка после всех попыток
 		m.cancelStream()
+		
+		// Проверяем, стоит ли повторять запрос
+		if isRetryableError(msg.err) && m.retryCount < m.maxRetries {
+			m.retryCount++
+			m.pendingContent += m.streaming // Сохраняем накопленный контент
+			m.streaming = ""
+			m.currentState = stateRetrying
+			m.errMsg = fmt.Sprintf(m.tr().RetryConnecting)
+			m.refreshViewport()
+			
+			// Запускаем retry с задержкой
+			return m, tea.Batch(
+				tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+					return retryMsg{}
+				}),
+				m.spinner.Tick,
+			)
+		}
+		
 		m.currentState = stateChat
 		m.errMsg = "AI error: " + msg.err.Error()
 		m.streaming = ""
@@ -1212,18 +1259,17 @@ func (m Model) handleAIChunk(msg aiChunkMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.done {
-		// Полный ответ получен — сохраняем и начинаем стриминг
-		m.fullResponse = msg.content
-		m.genTokens = countTokens(m.fullResponse)
-		if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
-			m.genSpeed = float64(m.genTokens) / elapsed
-		}
-		
-		// Парсим инструменты сразу
-		return m.processFullResponse()
+		return m.finalizeAIResponse()
 	}
 
-	// Не должно случиться — теперь ждём только done
+	// Живой стриминг — показываем чанки по мере поступления
+	m.streaming += msg.content
+	m.genTokens += countTokens(msg.content)
+	if elapsed := time.Since(m.genStartTime).Seconds(); elapsed > 0 {
+		m.genSpeed = float64(m.genTokens) / elapsed
+	}
+	m.refreshViewport()
+	m.scrollToBottom = true
 	return m, nil
 }
 
@@ -1463,11 +1509,19 @@ func (m Model) handleToolDone(msg toolDoneMsg) (tea.Model, tea.Cmd) {
 	}
 	m.sess.AddMessage(session.RoleTool, toolResultContent)
 
+	// Сбрасываем стриминг и переходим в stateThinking
+	// чтобы UI показывал спиннер пока AI продолжает ответ
+	m.streaming = ""
+	m.fullResponse = ""
+	m.displayedLen = 0
+	m.genStartTime = time.Now()
+	m.genTokens = 0
+	m.currentState = stateThinking
 	m.refreshViewport()
 	m.scrollToBottom = true
 
 	// Отправляем результат обратно в AI для продолжения
-	return m, m.streamAI()
+	return m, tea.Batch(m.streamAI(), m.spinner.Tick)
 }
 
 // ── View ──────────────────────────────────────────────────────────────────────
@@ -1736,7 +1790,7 @@ func (m Model) renderInput() string {
 	prompt := inputPromptStyle.Render("❯ ")
 	inputView := m.input.View()
 
-	return style.Width(m.width - 2).Render(prompt + inputView)
+	return style.Width(max(1, m.width-2)).Render(prompt + inputView)
 }
 
 // renderStatusBar отрисовывает статусную строку
@@ -1849,7 +1903,7 @@ func (m Model) resize() Model {
 
 	m.viewport.Width = m.width
 	m.viewport.Height = vpHeight
-	m.input.SetWidth(m.width - 4)
+	m.input.SetWidth(max(1, m.width-4))
 	m.refreshViewport()
 	return m
 }
@@ -1901,13 +1955,16 @@ func (m Model) renderMessages() string {
 
 	// Текущий стриминг (анимация) — НЕ показываем если сообщение уже в сессии
 	// (это предотвращает дублирование после завершения анимации)
-	if m.streaming != "" && m.displayedLen > 0 && m.displayedLen < len(m.streaming) {
+	if m.streaming != "" {
 		sb.WriteString(assistantLabelStyle.Render("◆ TermCode") + "\n")
-		
-		// Показываем только отображённую часть
+
+		// Безопасная обрезка по рунам а не байтам
 		displayText := m.streaming
-		if m.displayedLen < len(m.streaming) {
-			displayText = m.streaming[:m.displayedLen]
+		if m.displayedLen > 0 {
+			runes := []rune(m.streaming)
+			if m.displayedLen < len(runes) {
+				displayText = string(runes[:m.displayedLen])
+			}
 		}
 		
 		// Определяем — идёт ли сейчас think-фаза
@@ -2083,9 +2140,36 @@ func fetchOllamaModels(cfg *config.Config) tea.Cmd {
 			return ollamaModelsMsg{err: fmt.Errorf("provider config not found")}
 		}
 
-		// Ollama API: GET /api/tags
-		url := strings.TrimRight(pc.BaseURL, "/") + "/api/tags"
-		resp, err := httpGetJSON(url)
+		// Ollama API: GET /api/tags (локальный и cloud)
+		baseURL := strings.TrimRight(pc.BaseURL, "/")
+		// Для cloud URL типа https://ollama.com/api — убираем /api чтобы не дублировать
+		tagsURL := baseURL + "/tags"
+		if !strings.Contains(baseURL, "/api") {
+			tagsURL = baseURL + "/api/tags"
+		}
+
+		req, err := http.NewRequest("GET", tagsURL, nil)
+		if err != nil {
+			return ollamaModelsMsg{err: err}
+		}
+		// Добавляем Authorization для cloud API
+		if pc.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+pc.APIKey)
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return ollamaModelsMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			data, _ := io.ReadAll(resp.Body)
+			return ollamaModelsMsg{err: fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(data))}
+		}
+
+		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return ollamaModelsMsg{err: err}
 		}
@@ -2099,7 +2183,7 @@ func fetchOllamaModels(cfg *config.Config) tea.Cmd {
 		}
 
 		var tagsResp ollamaTagsResp
-		if err := jsonUnmarshal(resp, &tagsResp); err != nil {
+		if err := json.Unmarshal(data, &tagsResp); err != nil {
 			return ollamaModelsMsg{err: err}
 		}
 
@@ -2107,6 +2191,11 @@ func fetchOllamaModels(cfg *config.Config) tea.Cmd {
 		for _, m := range tagsResp.Models {
 			names = append(names, m.Name)
 		}
+
+		if len(names) == 0 {
+			return ollamaModelsMsg{err: fmt.Errorf("no models found (check API key and plan)")}
+		}
+
 		return ollamaModelsMsg{models: names}
 	}
 }
@@ -2842,7 +2931,7 @@ func (m Model) renderSessionLoad() string {
 		)
 
 		if i == m.sessionCursor {
-			sb.WriteString(userBubbleStyle.Width(m.width-2).Render("▶"+line) + "\n")
+			sb.WriteString(userBubbleStyle.Width(max(1, m.width-2)).Render("▶"+line) + "\n")
 		} else {
 			sb.WriteString(keyHintStyle.Render(" "+line) + "\n")
 		}
@@ -3013,7 +3102,7 @@ func (m Model) renderProfileEdit() string {
 	var sb strings.Builder
 	sb.WriteString(headerStyle.Render(t.ProfileTitle) + "\n\n")
 	sb.WriteString(keyHintStyle.Render("  Tell AI who you are — name, role, expertise.\n  This is added to every conversation.\n\n"))
-	sb.WriteString(inputContainerFocusStyle.Width(m.width-2).Render(m.editInput.View()))
+	sb.WriteString(inputContainerFocusStyle.Width(max(1, m.width-2)).Render(m.editInput.View()))
 	sb.WriteString("\n\n" + keyHintStyle.Render(t.ProfileSaveHint))
 	return sb.String()
 }
@@ -3025,7 +3114,7 @@ func (m Model) renderInstructEdit() string {
 	var sb strings.Builder
 	sb.WriteString(headerStyle.Render(t.InstructTitle) + "\n\n")
 	sb.WriteString(keyHintStyle.Render("  Tell AI how to respond — style, depth, format.\n  Applied to every message.\n\n"))
-	sb.WriteString(inputContainerFocusStyle.Width(m.width-2).Render(m.editInput.View()))
+	sb.WriteString(inputContainerFocusStyle.Width(max(1, m.width-2)).Render(m.editInput.View()))
 	sb.WriteString("\n\n" + keyHintStyle.Render(t.InstructSaveHint))
 	return sb.String()
 }
@@ -3066,4 +3155,12 @@ func getTermSize() (*winsize, error) {
 		return nil, err
 	}
 	return ws, nil
+}
+
+// stripANSI убирает ANSI escape коды из текста
+// Некоторые модели возвращают escape коды в ответах
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]`)
+
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
 }

@@ -1,3 +1,4 @@
+This project was arhived because I can't continue upgrade it. I'm really sorry 😓
 # TermCode
 
 > AI coding assistant for the terminal — built for Termux on Android

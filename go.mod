@@ -1,5 +1,7 @@
 module github.com/AITechnologyDev/termcode
 
+deprecated: "This project is archived due to its complex architecture (BubbleTea). Please use the new lightweight version without dependencies: github.com/AITechnologyDev/agent"
+
 go 1.22
 
 require (

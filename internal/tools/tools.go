@@ -21,7 +21,7 @@ type Result struct {
 	Error  string
 	OK     bool
 	// Extra — дополнительные данные для специальных инструментов (например ask_user)
-	Extra  map[string]any
+	Extra map[string]any
 }
 
 func ok(output string) Result {
@@ -211,7 +211,7 @@ func (e *Executor) ListFiles(subPath string) Result {
 	}
 
 	if sb.Len() == 0 {
-		 return ok("(directory is empty)")
+		return ok("(directory is empty)")
 	}
 	return ok(sb.String())
 }
@@ -474,21 +474,21 @@ func (e *Executor) DownloadFile(rawURL, destPath string) Result {
 
 // ddgResult — один результат поиска DuckDuckGo
 type ddgResult struct {
-	Title   string `json:"Text"`
-	URL     string `json:"FirstURL"`
+	Title string `json:"Text"`
+	URL   string `json:"FirstURL"`
 	// для RelatedTopics которые вложены
 	Topics []ddgResult `json:"Topics,omitempty"`
 }
 
 // ddgResponse — ответ DDG Instant Answer API
 type ddgResponse struct {
-	AbstractText   string       `json:"AbstractText"`
-	AbstractURL    string       `json:"AbstractURL"`
-	AbstractSource string       `json:"AbstractSource"`
-	RelatedTopics  []ddgResult  `json:"RelatedTopics"`
-	Results        []ddgResult  `json:"Results"`
-	Answer         string       `json:"Answer"`
-	AnswerType     string       `json:"AnswerType"`
+	AbstractText   string      `json:"AbstractText"`
+	AbstractURL    string      `json:"AbstractURL"`
+	AbstractSource string      `json:"AbstractSource"`
+	RelatedTopics  []ddgResult `json:"RelatedTopics"`
+	Results        []ddgResult `json:"Results"`
+	Answer         string      `json:"Answer"`
+	AnswerType     string      `json:"AnswerType"`
 }
 
 // WebSearch выполняет поиск через DuckDuckGo Instant Answer API + HTML scrape fallback

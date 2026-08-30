@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Provider идентифицирует AI провайдера
@@ -17,15 +18,144 @@ const (
 	ProviderOpenRouter Provider = "openrouter"
 )
 
+// ProviderKind — тип провайдера для UI-логики
+type ProviderKind string
+
+const (
+	KindLocal ProviderKind = "local" // запускается локально (ollama)
+	KindCloud ProviderKind = "cloud" // требует интернет + ключ
+	KindFree  ProviderKind = "free"  // free-tier, ключ опционален
+)
+
+// ProviderMeta — метаданные провайдера для UI.
+// Эти данные отображаются в селекторе провайдеров и палитре.
+type ProviderMeta struct {
+	ID           Provider
+	Label        string       // короткое имя: "Ollama"
+	Description  string       // описание в одну строку
+	Icon         string       // эмодзи/символ для UI
+	Kind         ProviderKind // local / cloud / free
+	RequiresKey  bool         // нужен ли API-ключ
+	KeyURL       string       // где взять ключ
+	DefaultModel string       // модель по умолчанию
+	DefaultURL   string       // base URL по умолчанию
+	Order        int          // порядок в списке (меньше = выше)
+}
+
+// providersMeta — единственный источник правды о провайдерах.
+// Порядок и метаданные для селектора провайдера берутся ТОЛЬКО отсюда.
+var providersMeta = []ProviderMeta{
+	{
+		ID:           ProviderOllama,
+		Label:        "Ollama",
+		Description:  "Local server + free cloud models",
+		Icon:         "◎",
+		Kind:         KindLocal,
+		RequiresKey:  false, // для локального Ollama; для cloud нужен ключ, но не обязателен
+		KeyURL:       "https://ollama.com/settings/api-keys",
+		DefaultModel: "qwen3-coder-next",
+		DefaultURL:   "https://ollama.com/api",
+		Order:        1,
+	},
+	{
+		ID:           ProviderOpenRouter,
+		Label:        "OpenRouter",
+		Description:  "Many free + paid models, one key",
+		Icon:         "⊕",
+		Kind:         KindFree,
+		RequiresKey:  true,
+		KeyURL:       "https://openrouter.ai/keys",
+		DefaultModel: "nvidia/nemotron-3-super-120b-a12b:free",
+		DefaultURL:   "https://openrouter.ai/api/v1",
+		Order:        2,
+	},
+	{
+		ID:           ProviderOpenAI,
+		Label:        "OpenAI",
+		Description:  "GPT-4o, GPT-5, o1, o3",
+		Icon:         "◯",
+		Kind:         KindCloud,
+		RequiresKey:  true,
+		KeyURL:       "https://platform.openai.com/api-keys",
+		DefaultModel: "gpt-4o-mini",
+		DefaultURL:   "https://api.openai.com/v1",
+		Order:        3,
+	},
+	{
+		ID:           ProviderAnthropic,
+		Label:        "Anthropic",
+		Description:  "Claude Opus, Sonnet, Haiku",
+		Icon:         "△",
+		Kind:         KindCloud,
+		RequiresKey:  true,
+		KeyURL:       "https://console.anthropic.com/settings/keys",
+		DefaultModel: "claude-sonnet-4-20250514",
+		DefaultURL:   "https://api.anthropic.com",
+		Order:        4,
+	},
+}
+
+// ProvidersMeta возвращает список всех провайдеров в стабильном порядке.
+func ProvidersMeta() []ProviderMeta {
+	out := make([]ProviderMeta, len(providersMeta))
+	copy(out, providersMeta)
+	// стабильная сортировка по Order
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].Order < out[i].Order {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}
+
+// GetProviderMeta возвращает метаданные провайдера по ID.
+// Если провайдер неизвестен — возвращает "generic" метаданные.
+func GetProviderMeta(id Provider) ProviderMeta {
+	for _, p := range providersMeta {
+		if p.ID == id {
+			return p
+		}
+	}
+	return ProviderMeta{
+		ID:          id,
+		Label:       string(id),
+		Description: "",
+		Icon:        "·",
+	}
+}
+
 // ProviderConfig — настройки одного провайдера
 type ProviderConfig struct {
-	BaseURL       string `json:"base_url"`
-	APIKey        string `json:"api_key"`
-	Model         string `json:"model"`
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+	Model   string `json:"model"`
 	// MaxTokens — максимум токенов в одном ответе (0 = авто по модели)
-	MaxTokens     int    `json:"max_tokens,omitempty"`
+	MaxTokens int `json:"max_tokens,omitempty"`
 	// ContextLength — размер окна контекста (0 = авто по модели)
-	ContextLength int    `json:"context_length,omitempty"`
+	ContextLength int `json:"context_length,omitempty"`
+}
+
+// NeedsAPIKey возвращает true, если провайдер обычно требует API-ключ.
+// Для Ollama — опционально (нужен только для cloud моделей на ollama.com).
+func (pc ProviderConfig) NeedsAPIKey(id Provider) bool {
+	if id == ProviderOllama {
+		// Для локального Ollama ключ не нужен
+		return strings.Contains(pc.BaseURL, "ollama.com")
+	}
+	return true
+}
+
+// MaskAPIKey возвращает замаскированный ключ для отображения.
+func (pc ProviderConfig) MaskAPIKey() string {
+	if pc.APIKey == "" {
+		return ""
+	}
+	if len(pc.APIKey) <= 8 {
+		return strings.Repeat("*", len(pc.APIKey))
+	}
+	return pc.APIKey[:4] + strings.Repeat("•", len(pc.APIKey)-8) + pc.APIKey[len(pc.APIKey)-4:]
 }
 
 // modelLimits — известные лимиты моделей: [max_tokens, context_length]
@@ -33,31 +163,31 @@ var modelLimits = map[string][2]int{
 	// NVIDIA Nemotron-3-Super — 120B/12B active, 1M context, бесплатно на OpenRouter
 	"nvidia/nemotron-3-super-120b-a12b:free": {32768, 1000000},
 	"nvidia/nemotron-3-super-120b-a12b":      {32768, 1000000},
-	"nemotron-3-super":                        {32768, 1000000},
+	"nemotron-3-super":                       {32768, 1000000},
 	// NVIDIA Nemotron 3 Nano
-	"nvidia/nemotron-3-nano:free":             {16384, 128000},
-	"nemotron-3-nano":                         {16384, 128000},
+	"nvidia/nemotron-3-nano:free": {16384, 128000},
+	"nemotron-3-nano":             {16384, 128000},
 	// ── g4f провайдеры (через g4f.space) ─────────────────────────────────
 	// Anthropic (через puter, azure и др.)
 	"anthropic/claude-opus-4-6":   {32768, 200000},
 	"anthropic/claude-sonnet-4-6": {32768, 200000},
 	"anthropic/claude-haiku-4-5":  {16384, 200000},
 	// OpenAI (через puter, PollinationsAI и др.)
-	"openai/gpt-4o":               {16384, 128000},
-	"openai/gpt-4o-mini":          {16384, 128000},
-	"openai/gpt-4.1":              {32768, 1000000},
-	"openai/gpt-5.3-codex":        {65536, 1000000},
-	"openai/o1":                   {65536, 200000},
-	"openai/o3-mini":              {65536, 200000},
+	"openai/gpt-4o":        {16384, 128000},
+	"openai/gpt-4o-mini":   {16384, 128000},
+	"openai/gpt-4.1":       {32768, 1000000},
+	"openai/gpt-5.3-codex": {65536, 1000000},
+	"openai/o1":            {65536, 200000},
+	"openai/o3-mini":       {65536, 200000},
 	// Google (через puter и др.)
-	"google/gemini-2.5-pro":       {65536, 1000000},
-	"google/gemini-2.5-flash":     {65536, 1000000},
+	"google/gemini-2.5-pro":   {65536, 1000000},
+	"google/gemini-2.5-flash": {65536, 1000000},
 	// DeepSeek (через g4f)
-	"deepseek/deepseek-r1":        {32768, 128000},
-	"deepseek/deepseek-v3":        {32768, 128000},
+	"deepseek/deepseek-r1": {32768, 128000},
+	"deepseek/deepseek-v3": {32768, 128000},
 	// Meta (через g4f)
-	"meta/llama-3.1-70b":          {8192, 131072},
-	"meta/llama-3.3-70b":          {8192, 131072},
+	"meta/llama-3.1-70b": {8192, 131072},
+	"meta/llama-3.3-70b": {8192, 131072},
 
 	// ── Ollama локальные модели ───────────────────────────────────────────
 	"qwen2.5-coder:7b":       {8192, 32768},
@@ -87,15 +217,15 @@ var modelLimits = map[string][2]int{
 	"deepseek-r1":            {16384, 65536},
 
 	// ── Прямые API (OpenAI, Anthropic, OpenRouter) ────────────────────────
-	"gpt-4o":                      {16384, 128000},
-	"gpt-4o-mini":                 {16384, 128000},
-	"gpt-4-turbo":                 {4096, 128000},
-	"o1-mini":                     {65536, 128000},
-	"claude-opus-4-6":             {32000, 200000},
-	"claude-sonnet-4-6":           {16000, 200000},
-	"claude-haiku-4-5-20251001":   {16000, 200000},
-	"gemini-2.5-flash":            {65536, 1000000},
-	"gemini-2.5-pro":              {65536, 1000000},
+	"gpt-4o":                    {16384, 128000},
+	"gpt-4o-mini":               {16384, 128000},
+	"gpt-4-turbo":               {4096, 128000},
+	"o1-mini":                   {65536, 128000},
+	"claude-opus-4-6":           {32000, 200000},
+	"claude-sonnet-4-6":         {16000, 200000},
+	"claude-haiku-4-5-20251001": {16000, 200000},
+	"gemini-2.5-flash":          {65536, 1000000},
+	"gemini-2.5-pro":            {65536, 1000000},
 }
 
 // GetMaxTokens возвращает лимит токенов ответа для данного конфига провайдера
@@ -124,48 +254,31 @@ func (pc ProviderConfig) GetContextLength() int {
 
 // Config — главный конфиг TermCode
 type Config struct {
-	ActiveProvider Provider                   `json:"active_provider"`
+	ActiveProvider Provider                    `json:"active_provider"`
 	Providers      map[Provider]ProviderConfig `json:"providers"`
-	WorkDir        string                     `json:"work_dir,omitempty"`
-	Theme          string                     `json:"theme"`
-	Language       string                     `json:"language"`
-	SystemPrompt   string                     `json:"system_prompt"`
+	WorkDir        string                      `json:"work_dir,omitempty"`
+	Theme          string                      `json:"theme"`
+	Language       string                      `json:"language"`
+	SystemPrompt   string                      `json:"system_prompt"`
 	// UserProfile — описание пользователя (кто я, чем занимаюсь)
-	UserProfile    string                     `json:"user_profile,omitempty"`
+	UserProfile string `json:"user_profile,omitempty"`
 	// AIInstructions — инструкции для AI (как отвечать, стиль, уровень)
-	AIInstructions string                     `json:"ai_instructions,omitempty"`
+	AIInstructions string `json:"ai_instructions,omitempty"`
 }
 
 // DefaultConfig возвращает конфиг с разумными дефолтами
 func DefaultConfig() *Config {
+	providers := make(map[Provider]ProviderConfig, len(providersMeta))
+	for _, p := range providersMeta {
+		providers[p.ID] = ProviderConfig{
+			BaseURL: p.DefaultURL,
+			APIKey:  "",
+			Model:   p.DefaultModel,
+		}
+	}
 	return &Config{
 		ActiveProvider: ProviderOllama,
-		Providers: map[Provider]ProviderConfig{
-			// Ollama — два режима:
-			// 1. Локальный: base_url = http://127.0.0.1:11434, api_key пустой
-			// 2. Cloud API: base_url = https://ollama.com/api, api_key = ваш ключ
-			//    Ключ: https://ollama.com/settings/api-keys
-			ProviderOllama: {
-				BaseURL: "https://ollama.com/api",
-				APIKey:  "",
-				Model:   "qwen3-coder-next",
-			},
-			ProviderOpenAI: {
-				BaseURL: "https://api.openai.com/v1",
-				APIKey:  "",
-				Model:   "gpt-4o-mini",
-			},
-			ProviderAnthropic: {
-				BaseURL: "https://api.anthropic.com",
-				APIKey:  "",
-				Model:   "claude-sonnet-4-20250514",
-			},
-			ProviderOpenRouter: {
-				BaseURL: "https://openrouter.ai/api/v1",
-				APIKey:  "",
-				Model:   "nvidia/nemotron-3-super-120b-a12b:free",
-			},
-		},
+		Providers:      providers,
 		Theme:          "dark",
 		Language:       "en",
 		UserProfile:    "",

@@ -31,12 +31,12 @@ const (
 
 // langDef описывает правила токенизации для одного языка
 type langDef struct {
-	lineComment  string   // однострочный комментарий
-	blockStart   string   // начало блочного комментария
-	blockEnd     string   // конец блочного комментария
-	keywords     []string
-	builtins     []string
-	types        []string
+	lineComment string // однострочный комментарий
+	blockStart  string // начало блочного комментария
+	blockEnd    string // конец блочного комментария
+	keywords    []string
+	builtins    []string
+	types       []string
 }
 
 var langs = map[string]langDef{

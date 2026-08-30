@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AITechnologyDev/termcode/internal/config"
+	"github.com/NekoFemDev/termcode/internal/config"
 )
 
 // Message — сообщение для API
@@ -149,10 +149,10 @@ func toInt(v any) (int, bool) {
 }
 
 type ollamaRequest struct {
-	Model    string        `json:"model"`
+	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-	Options  ollamaOptions `json:"options"`
+	Stream   bool            `json:"stream"`
+	Options  ollamaOptions   `json:"options"`
 }
 
 type ollamaMessage struct {
@@ -321,7 +321,7 @@ type openAIStreamResponse struct {
 		Delta struct {
 			Content   string `json:"content"`
 			ToolCalls []struct {
-				Index    int    `json:"index"`
+				Index    int `json:"index"`
 				Function struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`

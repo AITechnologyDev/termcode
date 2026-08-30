@@ -1,4 +1,3 @@
-This project is archived due to its complex architecture (BubbleTea). Please use the new lightweight version without dependencies: github.com/AITechnologyDev/agent I'm really sorry 😓
 # TermCode
 
 > AI coding assistant for the terminal — built for Termux on Android

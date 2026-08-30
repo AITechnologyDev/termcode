@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/AITechnologyDev/termcode/internal/config"
-	"github.com/AITechnologyDev/termcode/internal/session"
-	"github.com/AITechnologyDev/termcode/internal/tui"
+	"github.com/NekoFemDev/termcode/internal/config"
+	"github.com/NekoFemDev/termcode/internal/session"
+	"github.com/NekoFemDev/termcode/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -32,26 +32,23 @@ func buildRootCmd() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:   "termcode [рабочая-директория]",
-		Short: "TermCode — AI coding assistant для терминала",
-		Long: `TermCode — AI-ассистент для кодинга прямо в терминале.
-Работает с Ollama (локально), OpenAI, Anthropic, OpenRouter.
-Читает, пишет и патчит файлы проекта по запросу.`,
+		Use:   "termcode [workdir]",
+		Short: "TermCode — AI coding assistant for the terminal",
+		Long: `TermCode is an AI coding assistant that runs right in your terminal.
+Works with Ollama (local + cloud), OpenAI, Anthropic, OpenRouter.
+Reads, writes, and patches project files on request.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Рабочая директория
 			workDir := flagWorkDir
 			if len(args) > 0 {
 				workDir = args[0]
 			}
 
-			// Загружаем конфиг
 			cfg, err := config.Load()
 			if err != nil {
-				return fmt.Errorf("конфиг: %w", err)
+				return fmt.Errorf("config: %w", err)
 			}
 
-			// Переопределяем провайдер и модель из флагов
 			if flagProvider != "" {
 				cfg.ActiveProvider = config.Provider(flagProvider)
 			}
@@ -61,10 +58,9 @@ func buildRootCmd() *cobra.Command {
 				cfg.Providers[cfg.ActiveProvider] = pc
 			}
 
-			// Запускаем TUI
 			m, err := tui.New(cfg, workDir)
 			if err != nil {
-				return fmt.Errorf("инициализация TUI: %w", err)
+				return fmt.Errorf("init TUI: %w", err)
 			}
 
 			return tui.Start(m)
@@ -72,11 +68,11 @@ func buildRootCmd() *cobra.Command {
 	}
 
 	root.Flags().StringVarP(&flagProvider, "provider", "p", "",
-		"AI провайдер: ollama, openai, anthropic, openrouter")
+		"AI provider: ollama, openai, anthropic, openrouter")
 	root.Flags().StringVarP(&flagModel, "model", "m", "",
-		"Модель (переопределяет конфиг)")
+		"Model (overrides config)")
 	root.Flags().StringVarP(&flagWorkDir, "dir", "d", "",
-		"Рабочая директория проекта")
+		"Project working directory")
 
 	// Подкоманды
 	root.AddCommand(
@@ -93,47 +89,49 @@ func buildRootCmd() *cobra.Command {
 func buildConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Управление конфигурацией",
+		Short: "Manage configuration",
 	}
 
-	// config show
 	cmd.AddCommand(&cobra.Command{
 		Use:   "show",
-		Short: "Показать текущий конфиг",
+		Short: "Show current config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
 			dir, _ := config.ConfigDir()
-			fmt.Printf("Конфиг: %s/config.json\n\n", dir)
-			fmt.Printf("Активный провайдер: %s\n", cfg.ActiveProvider)
-			fmt.Printf("Провайдеры:\n")
-			for name, pc := range cfg.Providers {
+			fmt.Printf("Config: %s/config.json\n\n", dir)
+			fmt.Printf("Active provider: %s\n", cfg.ActiveProvider)
+			fmt.Printf("Providers:\n")
+			for _, pm := range config.ProvidersMeta() {
+				pc, ok := cfg.Providers[pm.ID]
+				if !ok {
+					continue
+				}
 				key := pc.APIKey
 				if key != "" {
 					if len(key) > 8 {
 						key = key[:4] + "..." + key[len(key)-4:]
 					}
 				} else {
-					key = "(не задан)"
+					key = "(not set)"
 				}
 				active := ""
-				if config.Provider(name) == cfg.ActiveProvider {
-					active = " ◄ активен"
+				if pm.ID == cfg.ActiveProvider {
+					active = " ◀ active"
 				}
-				fmt.Printf("  %-12s  модель: %-30s  url: %s  key: %s%s\n",
-					name, pc.Model, pc.BaseURL, key, active)
+				fmt.Printf("  %-12s  model: %-32s  url: %s  key: %s%s\n",
+					pm.ID, pc.Model, pc.BaseURL, key, active)
 			}
 			return nil
 		},
 	})
 
-	// config set-provider
 	var apiKey, model, baseURL string
 	setCmd := &cobra.Command{
-		Use:   "set-provider <провайдер>",
-		Short: "Установить активный провайдер и его параметры",
+		Use:   "set-provider <provider>",
+		Short: "Set active provider and its parameters",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -159,26 +157,25 @@ func buildConfigCmd() *cobra.Command {
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			fmt.Printf("Сохранено: активный провайдер = %s, модель = %s\n", provider, pc.Model)
+			fmt.Printf("Saved: active provider = %s, model = %s\n", provider, pc.Model)
 			return nil
 		},
 	}
-	setCmd.Flags().StringVar(&apiKey, "key", "", "API ключ")
-	setCmd.Flags().StringVar(&model, "model", "", "Модель")
+	setCmd.Flags().StringVar(&apiKey, "key", "", "API key")
+	setCmd.Flags().StringVar(&model, "model", "", "Model")
 	setCmd.Flags().StringVar(&baseURL, "url", "", "Base URL")
 	cmd.AddCommand(setCmd)
 
-	// config init — создаёт дефолтный конфиг
 	cmd.AddCommand(&cobra.Command{
 		Use:   "init",
-		Short: "Создать дефолтный конфиг",
+		Short: "Create default config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.DefaultConfig()
 			if err := cfg.Save(); err != nil {
 				return err
 			}
 			dir, _ := config.ConfigDir()
-			fmt.Printf("Конфиг создан: %s/config.json\n", dir)
+			fmt.Printf("Config created: %s/config.json\n", dir)
 			return nil
 		},
 	})
@@ -191,47 +188,45 @@ func buildConfigCmd() *cobra.Command {
 func buildSessionsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sessions",
-		Short: "Управление историей сессий",
+		Short: "Manage session history",
 	}
 
-	// sessions list
 	cmd.AddCommand(&cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "Показать список сессий",
+		Short:   "List saved sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessions, err := session.LoadAll()
 			if err != nil {
 				return err
 			}
 			if len(sessions) == 0 {
-				fmt.Println("Сессий пока нет.")
+				fmt.Println("No sessions yet.")
 				return nil
 			}
-			fmt.Printf("%-20s  %-8s  %-10s  %s\n", "ID", "Сообщ.", "Провайдер", "Заголовок")
+			fmt.Printf("%-20s  %-8s  %-12s  %s\n", "ID", "Msgs", "Provider", "Title")
 			fmt.Println(strings.Repeat("─", 70))
 			for _, s := range sessions {
 				title := s.Title
 				if len(title) > 40 {
 					title = title[:37] + "..."
 				}
-				fmt.Printf("%-20s  %-8d  %-10s  %s\n",
+				fmt.Printf("%-20s  %-8d  %-12s  %s\n",
 					s.ID, len(s.Messages), s.Provider, title)
 			}
 			return nil
 		},
 	})
 
-	// sessions delete
 	cmd.AddCommand(&cobra.Command{
 		Use:   "delete <ID>",
-		Short: "Удалить сессию",
+		Short: "Delete a session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := session.Delete(args[0]); err != nil {
 				return err
 			}
-			fmt.Printf("Сессия %s удалена.\n", args[0])
+			fmt.Printf("Session %s deleted.\n", args[0])
 			return nil
 		},
 	})
@@ -244,10 +239,10 @@ func buildSessionsCmd() *cobra.Command {
 func buildVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Версия TermCode",
+		Short: "Print TermCode version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("TermCode v%s (%s)\n", version, commit)
-			fmt.Println("github.com/AITechnologyDev/termcode")
+			fmt.Println("github.com/NekoFemDev/termcode")
 		},
 	}
 }

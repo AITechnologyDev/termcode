@@ -84,13 +84,30 @@ func (m Model) renderProviderSelect() string {
 			keyStatus = keyStatusNAStyle.Render(" " + t.ProviderKeyLocal + " ")
 		}
 
-		// Сборка строки
-		row := activeMark + iconLabel + "  " + kindTag + "  " + keyStatus
-
-		// Выделенная строка — единый фон на всю ширину, чтобы
-		// плашки тегов тоже лежали на подсвеченной полосе.
+		// Сборка строки.
+		// Для выделенной строки все пробелы-разделители делаем на фоне
+		// выделения — иначе между сегментами видна щель без подсветки.
+		var row string
 		if isCursor {
-			row = providerSelectedStyle.Width(rowW).Render(row)
+			gap := providerSelectedStyle.Render("  ")
+			row = providerSelectedStyle.Render(activeMark) +
+				providerSelectedStyle.Render(iconLabel) +
+				gap +
+				kindTag +
+				gap +
+				keyStatus
+		} else {
+			row = activeMark + iconLabel + "  " + kindTag + "  " + keyStatus
+		}
+
+		// Добиваем до полной ширины выделения.
+		if isCursor {
+			visibleWidth := lipgloss.Width(row)
+			pad := rowW - visibleWidth
+			if pad < 0 {
+				pad = 0
+			}
+			row += providerSelectedStyle.Render(strings.Repeat(" ", pad))
 		}
 
 		sb.WriteString(row + "\n")

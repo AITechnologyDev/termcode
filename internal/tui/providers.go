@@ -26,8 +26,8 @@ func (m Model) switchProvider(id config.Provider) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// renderProviderSelect — богатый экран выбора провайдера с метаданными.
-// Режим providerEditMode:
+// renderProviderSelect — экран выбора провайдера с метаданными.
+// providerEditMode:
 //
 //	0 = обычный выбор (Enter переключает)
 //	1 = редактирование API key
@@ -36,6 +36,12 @@ func (m Model) switchProvider(id config.Provider) (Model, tea.Cmd) {
 func (m Model) renderProviderSelect() string {
 	t := m.tr()
 	metas := config.ProvidersMeta()
+
+	// Ширина строки под выделение
+	rowW := m.width - 4
+	if rowW < 30 {
+		rowW = 30
+	}
 
 	var sb strings.Builder
 	sb.WriteString(headerStyle.Render(t.ProviderTitle) + "\n\n")
@@ -46,18 +52,16 @@ func (m Model) renderProviderSelect() string {
 		isActive := pm.ID == m.cfg.ActiveProvider
 		isCursor := i == m.providerCursor
 
-		// Активная плашка слева
-		var activeMark string
+		// Маркер активного провайдера
+		activeMark := "   "
 		if isActive {
-			activeMark = providerActiveStyle.Render(" ● ")
-		} else {
-			activeMark = "   "
+			activeMark = " " + providerActiveStyle.Render("●") + " "
 		}
 
 		// Иконка + label
-		iconLabel := fmt.Sprintf("%s %s", pm.Icon, pm.Label)
+		iconLabel := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("%s %s", pm.Icon, pm.Label))
 
-		// Тег типа провайдера
+		// Тег типа
 		var kindTag string
 		switch pm.Kind {
 		case config.KindLocal:
@@ -80,21 +84,23 @@ func (m Model) renderProviderSelect() string {
 			keyStatus = keyStatusNAStyle.Render(" " + t.ProviderKeyLocal + " ")
 		}
 
-		// Модель
-		modelLine := keyHintStyle.Render("model: " + pc.Model)
-
 		// Сборка строки
-		header := fmt.Sprintf("%s%s  %s%s", activeMark, iconLabel, kindTag, keyStatus)
-		if isCursor {
-			header = providerSelectedStyle.Render(header)
-		}
-		sb.WriteString(header + "\n")
+		row := activeMark + iconLabel + "  " + kindTag + "  " + keyStatus
 
-		// Описание (только на текущей строке, чтобы не раздувать)
+		// Выделенная строка — единый фон на всю ширину, чтобы
+		// плашки тегов тоже лежали на подсвеченной полосе.
+		if isCursor {
+			row = providerSelectedStyle.Width(rowW).Render(row)
+		}
+
+		sb.WriteString(row + "\n")
+
+		// Описание и модель — только под строкой курсора
 		if isCursor {
 			desc := keyHintStyle.Render("    " + pm.Description)
+			modelLine := keyHintStyle.Render("    model: " + pc.Model)
 			sb.WriteString(desc + "\n")
-			sb.WriteString("    " + modelLine + "\n")
+			sb.WriteString(modelLine + "\n")
 		}
 	}
 

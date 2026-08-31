@@ -27,7 +27,7 @@ type PluginToolSpec struct {
 type PluginSlashSpec struct {
 	Name        string
 	Description string
-	Run         func(argv []string) (output string, sideEffect string, err error)
+	Run         func(argv []string) (string, error)
 }
 
 // PluginPaletteSpec — описание элемента Ctrl+P палитры.
@@ -52,7 +52,7 @@ func (m Model) runPluginSlash(text string) (Model, bool, string) {
 			if rest != "" {
 				argv = fields(rest)
 			}
-			out, side, err := sc.Run(argv)
+			out, err := sc.Run(argv)
 			if err != nil {
 				return m, true, "plugin error: " + err.Error()
 			}
@@ -60,9 +60,6 @@ func (m Model) runPluginSlash(text string) (Model, bool, string) {
 				m.sess.AddMessage(session.RoleAssistant, out)
 				m.refreshViewport()
 				m.scrollToBottom = true
-			}
-			if side != "" {
-				return m, true, side
 			}
 			return m, true, ""
 		}

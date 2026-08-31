@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/NekoFemDev/termcode/internal/config"
-	"github.com/NekoFemDev/termcode/internal/plugins"
+	"github.com/NekoFemDev/termcode/internal/luaplugin"
 	"github.com/NekoFemDev/termcode/internal/session"
 	"github.com/NekoFemDev/termcode/internal/tui"
 	"github.com/spf13/cobra"
@@ -86,14 +86,29 @@ Reads, writes, and patches project files on request.`,
 	return root
 }
 
-// loadPlugins calls the in-process plugin registry and converts the
+// loadPlugins loads every Lua file from the default plugin dir
+// (and any extra dirs in $TERMCODE_PLUGIN_PATH) and converts the
+// result into a tui.PluginInput. Returns nil if no plugins are loaded.
+// pluginDirs returns the directories the loader scans for plugins.
+func pluginDirs() []string {
+	dirs := []string{}
+	if d, err := luaplugin.DefaultDir(); err == nil {
+		dirs = append(dirs, d)
+	}
+	dirs = append(dirs, luaplugin.ExtraDirsFromEnv()...)
+	return dirs
+}
+
+// loadPlugins loads every Lua file from the default plugin dir
+// (and any extra dirs in $TERMCODE_PLUGIN_PATH) and converts the
 // result into a tui.PluginInput. Returns nil if no plugins are loaded.
 func loadPlugins() *tui.PluginInput {
-	snap, err := plugins.Load()
+	snap, err := luaplugin.Load(pluginDirs()...)
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "plugin load: %v\n", err)
 	}
-	if snap == nil {
+	if snap == nil || len(snap.PluginNames) == 0 {
 		return nil
 	}
 
@@ -115,10 +130,7 @@ func loadPlugins() *tui.PluginInput {
 		in.SlashCommands = append(in.SlashCommands, tui.PluginSlashSpec{
 			Name:        sc.Name,
 			Description: sc.Description,
-			Run: func(argv []string) (string, string, error) {
-				out, err := sc.Run(argv)
-				return out, "", err
-			},
+			Run:         sc.Run,
 		})
 	}
 	for _, pi := range snap.PaletteItems {
@@ -160,14 +172,15 @@ func buildPluginCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List loaded plugins",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			snap, err := plugins.Load()
+			snap, err := luaplugin.Load(pluginDirs()...)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "warning:", err)
 			}
 			if len(snap.PluginNames) == 0 {
 				fmt.Println("No plugins loaded.")
-				fmt.Println("To add one: create internal/plugins/<name>/<name>.go and")
-				fmt.Println("import it from internal/plugins/registry.go, then rebuild.")
+				fmt.Println("To add one: drop a .lua file into ~/.config/termcode/plugins/")
+				fmt.Println("(or set $TERMCODE_PLUGIN_PATH). No rebuild required.")
+				fmt.Println("See examples/plugins/hello.lua for the API.")
 				return nil
 			}
 			fmt.Printf("%d plugin(s) loaded.\n", len(snap.PluginNames))

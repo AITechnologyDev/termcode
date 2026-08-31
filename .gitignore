@@ -1,2 +1,6 @@
 .git
 publish-github.sh
+DO_NOT_TOUCH/
+bug_report/
+providers_old.txt
+providers_test_old.txt

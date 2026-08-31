@@ -74,6 +74,52 @@ func TestRenderProviderSelect_NoOverflow(t *testing.T) {
 	}
 }
 
+// TestRenderProviderSelect_FirstRowOwnLine проверяет, что первая строка
+// списка (Ollama) начинается на своей собственной строке, а не приклеена
+// к концу строки-подсказки (регрессия: keyHintStyle.Render() съедает
+// "\n\n" из t.ProviderHint, из-за чего первая строка списка уезжает
+// вправо и обрезается терминалом).
+func TestRenderProviderSelect_FirstRowOwnLine(t *testing.T) {
+	cfg := config.DefaultConfig()
+	m, err := New(cfg, "/tmp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width = 120
+	m.height = 30
+	m.currentState = stateProviderSelect
+	m.providerCursor = 1 // курсор не на Ollama — проверяем именно "чужую" строку
+
+	out := m.renderProviderSelect()
+	lines := strings.Split(out, "\n")
+
+	for _, l := range lines {
+		visible := ansiRe2.ReplaceAllString(l, "")
+		if strings.Contains(visible, "navigate") && strings.Contains(visible, "Ollama") {
+			t.Fatalf("Ollama row got merged onto the hint line: %q", visible)
+		}
+	}
+
+	var ollamaLine string
+	for _, l := range lines {
+		visible := ansiRe2.ReplaceAllString(l, "")
+		if strings.Contains(visible, "Ollama") {
+			ollamaLine = visible
+			break
+		}
+	}
+	if ollamaLine == "" {
+		t.Fatal("Ollama line not found")
+	}
+	// Строка должна начинаться с маркера/отступа активного провайдера,
+	// а не с большого количества пробелов, сдвигающих её вправо.
+	trimmed := strings.TrimLeft(ollamaLine, " ")
+	leadingSpaces := len(ollamaLine) - len(trimmed)
+	if leadingSpaces > 4 {
+		t.Errorf("Ollama row appears pushed right: %d leading spaces: %q", leadingSpaces, ollamaLine)
+	}
+}
+
 // TestRenderProviderSelect_ColorDump дампит ANSI-последовательности
 // выделенной строки при TrueColor, чтобы понять, покрывает ли фон теги.
 func TestRenderProviderSelect_ColorDump(t *testing.T) {

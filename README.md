@@ -36,7 +36,7 @@ Think of it as a lightweight alternative to OpenCode or Aider — compiled to a 
 - **Single ~10 MB binary** — no Node.js, no Python, no Docker
 - **Streaming responses** — see the AI think in real time
 - **Tool use** — AI can read, write, patch files, run shell commands, search the web, download files
-- **Plugin system** — in-process Go plugins can add AI tools, slash commands, palette items, override theme colors, and contribute to the system prompt
+- **Lua plugin system** — drop a `.lua` file into `~/.config/termcode/plugins/`, restart TermCode, done. Plugins can add AI tools, slash commands, palette items, override theme colors, and contribute to the system prompt
 - **Web search** — built-in DuckDuckGo search + page fetcher, no API key needed
 - **Multi-provider** — Ollama (local + cloud), OpenAI, Anthropic, OpenRouter
 - **Free cloud models** — works great with `glm-4.7:cloud` and `qwen3-coder-next:cloud` via Ollama (no GPU required)
@@ -181,9 +181,11 @@ You can extend the AI's toolset with in-process Go plugins. See
 
 ## Plugins
 
-TermCode has a small in-process plugin system. A plugin is just a Go
-file that gets compiled into the TermCode binary — no IPC, no
-subprocess, no .so files, no Termux workaround.
+TermCode has a small plugin system based on **embedded Lua**. Plugins
+are plain `.lua` files in `~/.config/termcode/plugins/`. Drop a file
+in, restart TermCode, done — no Go, no rebuild, no subprocess, no
+`.so`, works on every platform TermCode supports (Termux, Linux,
+macOS, Windows).
 
 Plugins can do five things:
 
@@ -195,76 +197,59 @@ Plugins can do five things:
 
 ### Authoring a plugin
 
-Create `internal/plugins/<name>/<name>.go`:
+Create `~/.config/termcode/plugins/hello.lua`:
 
-```go
-package myplugin
+```lua
+-- termcode is a global table provided by TermCode on load.
 
-import (
-	"github.com/NekoFemDev/termcode/internal/plugin/host"
-	"github.com/NekoFemDev/termcode/internal/plugin/register"
+-- 1. Register a tool the AI can call.
+termcode.register_tool(
+    "hello_greet",                                -- name
+    "Greet someone by name.",                     -- description
+    "name (string, required) — person to greet", -- params
+    function(params)
+        local name = params.name or "world"
+        return "Hello, " .. name .. "!"
+    end
 )
 
-type MyPlugin struct{}
-
-func (p *MyPlugin) Name() string        { return "myplugin" }
-func (p *MyPlugin) Version() string     { return "0.1.0" }
-func (p *MyPlugin) Description() string { return "What this plugin does." }
-
-func (p *MyPlugin) Register(r host.Registry) error {
-	// 1. Register a tool the AI can call.
-	if err := r.RegisterTool(host.Tool{
-		Name:        "myplugin_echo",
-		Description: "Echo the input back to the AI.",
-		Params:      "text (string, required) — the text to echo",
-		Run: func(params map[string]string) (string, error) {
-			return params["text"], nil
-		},
-	}); err != nil {
-		return err
-	}
-
-	// 2. Register a slash command. Users type "/myplugin <args>".
-	r.RegisterSlashCommand(host.SlashCommand{
-		Name:        "/myplugin",
-		Description: "Demo slash command.",
-		Run: func(argv []string) (string, error) {
-			return "Hi from myplugin!", nil
-		},
-	})
-
-	// 3. Register a palette item (Ctrl+P).
-	r.RegisterPaletteItem(host.PaletteItem{
-		Title:       "My plugin — info",
-		Description: "Insert plugin info into the chat.",
-		Run: func() (string, error) {
-			return "myplugin v0.1.0 loaded.", nil
-		},
-	})
-
-	// 4. Override theme colors. Empty fields keep the defaults.
-	r.SetTheme(host.Theme{Primary: "EC4899"}) // hot pink brand
-
-	// 5. Add a system-prompt fragment.
-	r.AppendSystemPrompt("## My plugin active\nKeep replies under 3 sentences.")
-
-	return nil
-}
-
-func init() { register.Plug(&MyPlugin{}) }
-```
-
-Then add a blank import in `internal/plugins/registry.go`:
-
-```go
-import (
-	_ "github.com/NekoFemDev/termcode/internal/plugins/myplugin"
+-- 2. Register a slash command. Users type "/hello <name>".
+termcode.register_command(
+    "/hello",
+    "Say hi (optionally to a name).",
+    function(argv)
+        if argv == "" then return "Hi!" end
+        return "Hi, " .. argv .. "!"
+    end
 )
+
+-- 3. Register a palette item (Ctrl+P).
+termcode.register_palette(
+    "Hello — say hi",
+    "Inserts a friendly greeting.",
+    function() return "Hello from a Lua plugin!" end
+)
+
+-- 4. Override theme colors. Any subset is fine.
+termcode.set_theme({ primary = "EC4899" }) -- hot pink
+
+-- 5. Append a system-prompt fragment.
+termcode.append_prompt("## hello active\nKeep replies under 3 sentences.")
 ```
 
-Rebuild TermCode. The new tool is available to the AI, the theme is
-applied at startup, and the prompt fragment is appended to every
-conversation.
+Restart TermCode. The tool, command, palette item, theme, and prompt
+fragment are immediately available — no rebuild of the TermCode
+binary, no Go installed, just a `.lua` file.
+
+### Plugin discovery
+
+TermCode loads every `.lua` file in these directories, in order:
+
+1. `~/.config/termcode/plugins/` (default)
+2. Every directory listed in `$TERMCODE_PLUGIN_PATH` (colon-separated)
+
+A broken file is logged to stderr and skipped; other plugins still
+load.
 
 ### Listing loaded plugins
 
@@ -272,15 +257,30 @@ conversation.
 termcode plugin list
 ```
 
+Example output:
+
+```
+1 plugin(s) loaded.
+● hello
+  Tools: 1
+  Slash commands: 1
+    /hello — Say hi (optionally to a name).
+  Palette items: 1
+    Hello — say hi — Inserts a friendly greeting from the hello plugin.
+  Theme override: active
+  System-prompt fragments: 1
+```
+
 ### Caveats
 
-- Plugins are compiled into the TermCode binary. You need Go installed
-  to add a plugin. Once compiled, plugins work on every platform
-  TermCode supports (Termux, Linux, macOS, Windows).
-- Plugin code runs with the same privileges as TermCode. Don't load
-  plugins you don't trust.
-- Plugin tools share the same name space as built-in tools. Names like
-  `read_file` are reserved and registering one will fail.
+- Plugin code runs in-process with the same privileges as TermCode.
+  Don't load plugins you don't trust.
+- Plugin tools share the same name space as built-in tools. Names
+  like `read_file` are reserved.
+- The Lua standard library is mostly available (string, math, table,
+  etc.) but `os`, `io`, and `require` are not exposed to keep
+  plugins sandboxed. (You can still build anything from the `string`
+  library and pure Lua.)
 
 ### Example: AI searches the web
 
@@ -335,11 +335,7 @@ termcode/
 │   ├── config/                   # Config + ProviderMeta + model limits
 │   ├── session/                  # Session history → ~/.config/termcode/sessions/
 │   ├── tools/                    # Built-in tools + plugin tool dispatch
-│   ├── plugin/
-│   │   ├── host/                 # Plugin contract (Tool, Theme, Registry)
-│   │   └── register/             # In-process plugin registration
-│   ├── plugins/                  # Built-in plugin imports + example
-│   │   └── example/              # Demo plugin (tool + theme + prompt fragment)
+│   └── luaplugin/               # Embedded Lua plugin loader (gopher-lua)
 │   └── tui/                      # BubbleTea TUI (split into 14 files)
 ├── go.mod
 ├── Makefile

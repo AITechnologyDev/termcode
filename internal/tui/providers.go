@@ -45,7 +45,14 @@ func (m Model) renderProviderSelect() string {
 
 	var sb strings.Builder
 	sb.WriteString(headerStyle.Render(t.ProviderTitle) + "\n\n")
-	sb.WriteString(keyHintStyle.Render(t.ProviderHint))
+	// keyHintStyle.Render() trims trailing newlines from its input (lipgloss
+	// normalizes whitespace when styling), so the "\n\n" baked into
+	// t.ProviderHint gets silently eaten. Without an explicit "\n" here, the
+	// first provider row (Ollama) gets appended directly onto the end of the
+	// hint line instead of starting on its own line — it then renders way to
+	// the right and gets clipped by terminal wrap. Add the break explicitly
+	// so it can't be swallowed by Render().
+	sb.WriteString(keyHintStyle.Render(strings.TrimRight(t.ProviderHint, "\n")) + "\n\n")
 
 	for i, pm := range metas {
 		pc := m.cfg.Providers[pm.ID]

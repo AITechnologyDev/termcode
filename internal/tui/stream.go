@@ -92,8 +92,15 @@ func (m *Model) streamAI() tea.Cmd {
 		extraContext += "\n\n## Response instructions\n" + m.cfg.AIInstructions
 	}
 
-	systemPrompt := m.cfg.SystemPrompt + "\n\n" + tools.ToolDefs() +
+	systemPrompt := m.cfg.SystemPrompt + "\n\n" + tools.ToolDefsWithExtras(m.pluginTools()) +
 		"\n\nWorking directory: " + m.workDir + extraContext + langInstruction
+
+	// Append system-prompt fragments contributed by in-process plugins.
+	for _, frag := range m.pluginSystemPromptParts() {
+		if frag != "" {
+			systemPrompt += "\n\n" + frag
+		}
+	}
 
 	apiMsgs, dropped := ai.TrimMessages(rawMsgs, systemPrompt, contextLength-maxTokens)
 	if dropped > 0 {

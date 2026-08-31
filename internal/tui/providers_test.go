@@ -22,7 +22,7 @@ func TestRenderProviderSelect_NoOverflow(t *testing.T) {
 	pc.Model = "qwen3-coder-next"
 	cfg.Providers[config.ProviderOllama] = pc
 
-	m, err := New(cfg, "/tmp")
+	m, err := New(cfg, "/tmp", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestRenderProviderSelect_ColorDump(t *testing.T) {
 	pc.Model = "qwen3-coder-next"
 	cfg.Providers[config.ProviderOllama] = pc
 
-	m, err := New(cfg, "/tmp")
+	m, err := New(cfg, "/tmp", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,8 +14,28 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// PluginInput is the in-process plugin snapshot the TUI consumes at
+// startup. May be nil.
+type PluginInput struct {
+	Tools       []PluginToolSpec
+	Theme       *ThemeOverride
+	PromptParts []string
+	Names       []string
+}
+
+// PluginToolSpec — минимальное описание инструмента для регистрации в
+// Executor. Совпадает по форме с tools.PluginTool, но живёт в tui,
+// чтобы не тянуть plugin/host в эту зависимость.
+type PluginToolSpec struct {
+	Name        string
+	Description string
+	Params      string
+	Run         func(params map[string]string) (string, error)
+}
+
 // New создаёт новую TUI модель.
-func New(cfg *config.Config, workDir string) (*Model, error) {
+// plugins may be nil — the TUI then runs without plugins.
+func New(cfg *config.Config, workDir string, plugins *PluginInput) (*Model, error) {
 	if workDir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -62,12 +82,14 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		heightPx = int(ws.Ypixel)
 	}
 
+	exec := tools.New(workDir)
+
 	m := &Model{
 		cfg:            cfg,
 		provider:       provider,
 		sess:           sess,
 		workDir:        workDir,
-		executor:       tools.New(workDir),
+		executor:       exec,
 		viewport:       vp,
 		input:          ta,
 		editInput:      editTa,
@@ -82,6 +104,21 @@ func New(cfg *config.Config, workDir string) (*Model, error) {
 		toolsExtracted: false,
 		displayedLen:   0,
 	}
+
+	// Apply plugin theme + register plugin tools.
+	if plugins != nil {
+		if plugins.Theme != nil {
+			applyTheme(plugins.Theme)
+		}
+		for _, t := range plugins.Tools {
+			tool := t
+			if err := exec.RegisterPluginTool(tool.Name, tool.Run); err != nil {
+				fmt.Fprintf(os.Stderr, "plugin tool %q: %v\n", tool.Name, err)
+			}
+		}
+		m.pluginInput = plugins
+	}
+
 	m.paletteItems = m.buildPaletteItems()
 	m.thinkExpanded = make(map[int]bool)
 	m.questionSelected = make(map[int]bool)
@@ -102,4 +139,30 @@ func (m Model) Init() tea.Cmd {
 		}
 	}
 	return tea.Batch(cmds...)
+}
+
+// pluginTools returns the slice of plugin tools for inclusion in the
+// system prompt. Empty if no plugins.
+func (m Model) pluginTools() []tools.PluginTool {
+	if m.pluginInput == nil {
+		return nil
+	}
+	out := []tools.PluginTool{}
+	for _, t := range m.pluginInput.Tools {
+		out = append(out, tools.PluginTool{
+			Name:        t.Name,
+			Description: t.Description,
+			Params:      t.Params,
+		})
+	}
+	return out
+}
+
+// pluginSystemPromptParts returns plugin-contributed system-prompt
+// fragments in registration order. Empty if no plugins.
+func (m Model) pluginSystemPromptParts() []string {
+	if m.pluginInput == nil {
+		return nil
+	}
+	return m.pluginInput.PromptParts
 }

@@ -35,6 +35,10 @@ func fail(err string) Result {
 // Executor выполняет инструменты с привязкой к рабочей директории
 type Executor struct {
 	WorkDir string
+
+	// pluginTools — name -> Run func. Populated at startup from
+	// in-process plugins via RegisterPluginTool.
+	pluginTools map[string]func(params map[string]string) (string, error)
 }
 
 // New создаёт Executor
@@ -42,7 +46,22 @@ func New(workDir string) *Executor {
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
-	return &Executor{WorkDir: workDir}
+	return &Executor{WorkDir: workDir, pluginTools: map[string]func(map[string]string) (string, error){}}
+}
+
+// RegisterPluginTool registers a tool from a plugin. Returns an error
+// if the name conflicts with a built-in or another plugin.
+func (e *Executor) RegisterPluginTool(name string, run func(map[string]string) (string, error)) error {
+	switch name {
+	case "read_file", "write_file", "patch_file", "list_files", "run_command",
+		"download_file", "web_search", "fetch_page", "ask_user":
+		return fmt.Errorf("plugin tool %q conflicts with built-in", name)
+	}
+	if _, exists := e.pluginTools[name]; exists {
+		return fmt.Errorf("plugin tool %q already registered", name)
+	}
+	e.pluginTools[name] = run
+	return nil
 }
 
 // resolvePath делает путь абсолютным относительно WorkDir
@@ -400,6 +419,13 @@ func (e *Executor) Dispatch(name string, params map[string]string) Result {
 		}
 
 	default:
+		if run, ok := e.pluginTools[name]; ok {
+			out, err := run(params)
+			if err != nil {
+				return fail(err.Error())
+			}
+			return Result{OK: true, Output: out}
+		}
 		return fail(fmt.Sprintf("unknown tool: %s", name))
 	}
 }
@@ -817,7 +843,40 @@ func stripHTML(html string) string {
 }
 
 // ToolDefs возвращает описание инструментов для системного промпта
+// ToolDefs returns the base list of tool definitions for the system prompt.
 func ToolDefs() string {
+	return toolDefsBody()
+}
+
+// ToolDefsWithExtras appends plugin tool definitions to the system prompt.
+func ToolDefsWithExtras(extras []PluginTool) string {
+	if len(extras) == 0 {
+		return ToolDefs()
+	}
+	var b strings.Builder
+	b.WriteString(toolDefsBody())
+	for _, t := range extras {
+		b.WriteString("\n\n### ")
+		b.WriteString(t.Name)
+		b.WriteString("\n")
+		b.WriteString(t.Description)
+		if t.Params != "" {
+			b.WriteString("\nParams: ")
+			b.WriteString(t.Params)
+		}
+	}
+	return b.String()
+}
+
+// PluginTool is the slice of host.Tool we need at this layer (kept here
+// to avoid an import cycle with internal/plugin/host).
+type PluginTool struct {
+	Name        string
+	Description string
+	Params      string
+}
+
+func toolDefsBody() string {
 	return `## Tools
 
 You have access to tools. To call a tool, output ONLY this exact format in your response:

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/NekoFemDev/termcode/internal/config"
+	"github.com/NekoFemDev/termcode/internal/plugins"
 	"github.com/NekoFemDev/termcode/internal/session"
 	"github.com/NekoFemDev/termcode/internal/tui"
 	"github.com/spf13/cobra"
@@ -58,7 +59,7 @@ Reads, writes, and patches project files on request.`,
 				cfg.Providers[cfg.ActiveProvider] = pc
 			}
 
-			m, err := tui.New(cfg, workDir)
+			m, err := tui.New(cfg, workDir, loadPlugins())
 			if err != nil {
 				return fmt.Errorf("init TUI: %w", err)
 			}
@@ -78,10 +79,93 @@ Reads, writes, and patches project files on request.`,
 	root.AddCommand(
 		buildConfigCmd(),
 		buildSessionsCmd(),
+		buildPluginCmd(),
 		buildVersionCmd(),
 	)
 
 	return root
+}
+
+// loadPlugins calls the in-process plugin registry and converts the
+// result into a tui.PluginInput. Returns nil if no plugins are loaded.
+func loadPlugins() *tui.PluginInput {
+	snap, err := plugins.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "plugin load: %v\n", err)
+	}
+	if snap == nil {
+		return nil
+	}
+
+	in := &tui.PluginInput{
+		Names:       snap.PluginNames,
+		PromptParts: snap.PromptParts,
+	}
+	for _, t := range snap.Tools {
+		tool := t
+		in.Tools = append(in.Tools, tui.PluginToolSpec{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Params:      tool.Params,
+			Run:         tool.Run,
+		})
+	}
+	if snap.Theme != nil {
+		th := &tui.ThemeOverride{}
+		th.Primary = snap.Theme.Primary
+		th.Secondary = snap.Theme.Secondary
+		th.Accent = snap.Theme.Accent
+		th.Success = snap.Theme.Success
+		th.Warning = snap.Theme.Warning
+		th.Error = snap.Theme.Error
+		th.Muted = snap.Theme.Muted
+		th.Bg = snap.Theme.Bg
+		th.BgLight = snap.Theme.BgLight
+		th.BgSubtle = snap.Theme.BgSubtle
+		th.Border = snap.Theme.Border
+		th.Text = snap.Theme.Text
+		th.Link = snap.Theme.Link
+		in.Theme = th
+	}
+	return in
+}
+
+// ── termcode plugin ──────────────────────────────────────────────────────────
+
+func buildPluginCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plugin",
+		Short: "Manage in-process plugins",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List loaded plugins",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snap, err := plugins.Load()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "warning:", err)
+			}
+			if len(snap.PluginNames) == 0 {
+				fmt.Println("No plugins loaded.")
+				fmt.Println("To add one: create internal/plugins/<name>/<name>.go and")
+				fmt.Println("import it from internal/plugins/registry.go, then rebuild.")
+				return nil
+			}
+			fmt.Printf("%d plugin(s) loaded, %d tool(s) registered.\n",
+				len(snap.PluginNames), len(snap.Tools))
+			for _, name := range snap.PluginNames {
+				fmt.Println("● " + name)
+			}
+			if snap.Theme != nil {
+				fmt.Println("Theme override: active")
+			}
+			if len(snap.PromptParts) > 0 {
+				fmt.Printf("System-prompt fragments: %d\n", len(snap.PromptParts))
+			}
+			return nil
+		},
+	})
+	return cmd
 }
 
 // ── termcode config ───────────────────────────────────────────────────────────

@@ -2,154 +2,214 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Цветовая палитра (тёмная тема)
+// ThemeOverride — оверрайды палитры. Поля соответствуют
+// plugin/host.Theme; конвертация делается в main.go, чтобы tui не
+// зависел от plugin/host напрямую.
+type ThemeOverride struct {
+	Primary   string
+	Secondary string
+	Accent    string
+	Success   string
+	Warning   string
+	Error     string
+	Muted     string
+	Bg        string
+	BgLight   string
+	BgSubtle  string
+	Border    string
+	Text      string
+	Link      string
+}
+
+// Цветовая палитра (тёмная тема). Поля — *lipgloss.Color, потому что
+// плагины могут менять их на старте через applyTheme.
 var (
-	colorPrimary   = lipgloss.Color("#A78BFA") // светло-фиолетовый — акцент
-	colorSecondary = lipgloss.Color("#22D3EE") // циан
-	colorAccent    = lipgloss.Color("#F472B6") // розовый — для активного
-	colorSuccess   = lipgloss.Color("#34D399") // зелёный
-	colorWarning   = lipgloss.Color("#FBBF24") // жёлтый
-	colorError     = lipgloss.Color("#F87171") // красный
-	colorMuted     = lipgloss.Color("#6B7280") // серый
-	colorBg        = lipgloss.Color("#111827") // фон
-	colorBgLight   = lipgloss.Color("#1F2937") // подложка плашек
-	colorBgSubtle  = lipgloss.Color("#374151") // граница выделения
-	colorText      = lipgloss.Color("#F9FAFB") // основной текст
-	colorBorder    = lipgloss.Color("#4B5563") // граница
-	colorLink      = lipgloss.Color("#60A5FA") // ссылки
+	colorPrimary   = colorPtr("#A78BFA") // светло-фиолетовый — акцент
+	colorSecondary = colorPtr("#22D3EE") // циан
+	colorAccent    = colorPtr("#F472B6") // розовый — для активного
+	colorSuccess   = colorPtr("#34D399") // зелёный
+	colorWarning   = colorPtr("#FBBF24") // жёлтый
+	colorError     = colorPtr("#F87171") // красный
+	colorMuted     = colorPtr("#6B7280") // серый
+	colorBg        = colorPtr("#111827") // фон
+	colorBgLight   = colorPtr("#1F2937") // подложка плашек
+	colorBgSubtle  = colorPtr("#374151") // граница выделения
+	colorText      = colorPtr("#F9FAFB") // основной текст
+	colorBorder    = colorPtr("#4B5563") // граница
+	colorLink      = colorPtr("#60A5FA") // ссылки
 )
 
-// Стили компонентов
+func colorPtr(hex string) *lipgloss.Color {
+	c := lipgloss.Color(hex)
+	return &c
+}
+
+func setColor(dst *lipgloss.Color, hex string) {
+	if hex == "" {
+		return
+	}
+	*dst = lipgloss.Color(hex)
+}
+
+// applyTheme переписывает палитру из ThemeOverride (пустые поля
+// игнорируются) и пересоздаёт зависимые стили. Вызывается один раз
+// при старте.
+func applyTheme(t *ThemeOverride) {
+	if t == nil {
+		return
+	}
+	setColor(colorPrimary, t.Primary)
+	setColor(colorSecondary, t.Secondary)
+	setColor(colorAccent, t.Accent)
+	setColor(colorSuccess, t.Success)
+	setColor(colorWarning, t.Warning)
+	setColor(colorError, t.Error)
+	setColor(colorMuted, t.Muted)
+	setColor(colorBg, t.Bg)
+	setColor(colorBgLight, t.BgLight)
+	setColor(colorBgSubtle, t.BgSubtle)
+	setColor(colorBorder, t.Border)
+	setColor(colorText, t.Text)
+	setColor(colorLink, t.Link)
+	// После изменения палитры — пересоздаём стили, зависящие от цветов.
+	rebuildStyles()
+}
+
+// ── Стили компонентов ─────────────────────────────────────────────────
+//
+// Стили пересоздаются в rebuildStyles() при applyTheme. Сами var-объявления
+// ниже — это просто инициализация по умолчанию.
+
 var (
-	// ── Заголовок / хедер ───────────────────────────────────────────────────
+	// ── Заголовок / хедер ───────────────────────────────────────────────
 	headerStyle = lipgloss.NewStyle().
-			Background(colorPrimary).
+			Background(*colorPrimary).
 			Foreground(lipgloss.Color("#1F2937")).
 			Bold(true).
 			Padding(0, 2)
 
 	headerPillStyle = lipgloss.NewStyle().
-			Background(colorBgSubtle).
-			Foreground(colorPrimary).
+			Background(*colorBgSubtle).
+			Foreground(*colorPrimary).
 			Bold(true).
 			Padding(0, 1)
 
 	headerInfoStyle = lipgloss.NewStyle().
-			Background(colorBgLight).
-			Foreground(colorSecondary).
+			Background(*colorBgLight).
+			Foreground(*colorSecondary).
 			Padding(0, 1)
 
 	langPillStyle = lipgloss.NewStyle().
-			Background(colorAccent).
+			Background(*colorAccent).
 			Foreground(lipgloss.Color("#1F2937")).
 			Bold(true).
 			Padding(0, 1)
 
-	// ── Сообщения чата ──────────────────────────────────────────────────────
+	// ── Сообщения чата ──────────────────────────────────────────────────
 	userBubbleStyle = lipgloss.NewStyle().
-			Foreground(colorText).
+			Foreground(*colorText).
 			Padding(0, 1).
 			MarginTop(1).
 			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderForeground(colorPrimary)
+			BorderForeground(*colorPrimary)
 
 	assistantBubbleStyle = lipgloss.NewStyle().
-				Foreground(colorText).
+				Foreground(*colorText).
 				MarginTop(1)
 
 	userLabelStyle = lipgloss.NewStyle().
-			Foreground(colorPrimary).
+			Foreground(*colorPrimary).
 			Bold(true)
 
 	assistantLabelStyle = lipgloss.NewStyle().
-				Foreground(colorSecondary).
+				Foreground(*colorSecondary).
 				Bold(true)
 
-	// ── Tool calls ──────────────────────────────────────────────────────────
+	// ── Tool calls ──────────────────────────────────────────────────────
 	toolCallStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorWarning).
-			Foreground(colorWarning).
+			BorderForeground(*colorWarning).
+			Foreground(*colorWarning).
 			Padding(0, 1).
 			MarginTop(1)
 
 	toolResultStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorSuccess).
-			Foreground(colorSuccess).
+			BorderForeground(*colorSuccess).
+			Foreground(*colorSuccess).
 			Padding(0, 1)
 
 	toolErrorStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorError).
-			Foreground(colorError).
+			BorderForeground(*colorError).
+			Foreground(*colorError).
 			Padding(0, 1)
 
-	// ── Строка ввода ────────────────────────────────────────────────────────
+	// ── Строка ввода ────────────────────────────────────────────────────
 	inputContainerStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(colorBorder).
+				BorderForeground(*colorBorder).
 				Padding(0, 1)
 
 	inputContainerFocusStyle = lipgloss.NewStyle().
 					Border(lipgloss.RoundedBorder()).
-					BorderForeground(colorSecondary).
+					BorderForeground(*colorSecondary).
 					Padding(0, 1)
 
 	inputPromptStyle = lipgloss.NewStyle().
-				Foreground(colorPrimary).
+				Foreground(*colorPrimary).
 				Bold(true)
 
-	// ── Статусная строка ────────────────────────────────────────────────────
+	// ── Статусная строка ────────────────────────────────────────────────
 	statusBarStyle = lipgloss.NewStyle().
-			Background(colorBgLight).
-			Foreground(colorMuted).
+			Background(*colorBgLight).
+			Foreground(*colorMuted).
 			Padding(0, 1)
 
 	statusOKStyle = lipgloss.NewStyle().
-			Foreground(colorSuccess).
+			Foreground(*colorSuccess).
 			Bold(true)
 
 	statusBusyStyle = lipgloss.NewStyle().
-			Foreground(colorWarning).
+			Foreground(*colorWarning).
 			Bold(true)
 
 	statusErrStyle = lipgloss.NewStyle().
-			Foreground(colorError).
+			Foreground(*colorError).
 			Bold(true)
 
-	// ── Подсказки клавиш ────────────────────────────────────────────────────
+	// ── Подсказки клавиш ────────────────────────────────────────────────
 	keyHintStyle = lipgloss.NewStyle().
-			Foreground(colorMuted)
+			Foreground(*colorMuted)
 
 	keyStyle = lipgloss.NewStyle().
-			Foreground(colorSecondary).
+			Foreground(*colorSecondary).
 			Bold(true)
 
 	linkStyle = lipgloss.NewStyle().
-			Foreground(colorLink).
+			Foreground(*colorLink).
 			Underline(true)
 
-	// ── Разделитель ─────────────────────────────────────────────────────────
+	// ── Разделитель ─────────────────────────────────────────────────────
 	dividerStyle = lipgloss.NewStyle().
-			Foreground(colorBorder)
+			Foreground(*colorBorder)
 
-	// ── Код-блоки ───────────────────────────────────────────────────────────
+	// ── Код-блоки ───────────────────────────────────────────────────────
 	codeBlockStyle = lipgloss.NewStyle().
-			Background(colorBg).
-			Foreground(colorText).
+			Background(*colorBg).
+			Foreground(*colorText).
 			Padding(0, 1).
 			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderForeground(colorSecondary)
+			BorderForeground(*colorSecondary)
 
-	// ── Spinner ─────────────────────────────────────────────────────────────
+	// ── Spinner ─────────────────────────────────────────────────────────
 	spinnerStyle = lipgloss.NewStyle().
-			Foreground(colorSecondary)
+			Foreground(*colorSecondary)
 
-	// ── Теги провайдеров/моделей ───────────────────────────────────────────
+	// ── Теги провайдеров/моделей ───────────────────────────────────────
 	tagLocalStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("#064E3B")).
-			Foreground(colorSuccess).
+			Foreground(*colorSuccess).
 			Bold(true).
 			Padding(0, 1)
 
@@ -165,35 +225,82 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
-	// ── Provider select ────────────────────────────────────────────────────
+	// ── Provider select ────────────────────────────────────────────────
 	providerActiveStyle = lipgloss.NewStyle().
-				Foreground(colorAccent).
+				Foreground(*colorAccent).
 				Bold(true)
 
 	providerSelectedStyle = lipgloss.NewStyle().
-				Background(colorBgSubtle).
+				Background(*colorBgSubtle).
 				Bold(true)
 
-	// ── API key status ─────────────────────────────────────────────────────
+	// ── API key status ─────────────────────────────────────────────────
 	keyStatusOKStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#064E3B")).
-				Foreground(colorSuccess).
+				Foreground(*colorSuccess).
 				Bold(true).
 				Padding(0, 1)
 
 	keyStatusBadStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#7F1D1D")).
-				Foreground(colorError).
+				Foreground(*colorError).
 				Bold(true).
 				Padding(0, 1)
 
 	keyStatusNAStyle = lipgloss.NewStyle().
-				Background(colorBgLight).
-				Foreground(colorMuted).
+				Background(*colorBgLight).
+				Foreground(*colorMuted).
 				Padding(0, 1)
 
-	// ── Palette ─────────────────────────────────────────────────────────────
+	// ── Palette ─────────────────────────────────────────────────────────
 	paletteSelectedStyle = lipgloss.NewStyle().
-				Background(colorBgSubtle).
-				Foreground(colorText)
+				Background(*colorBgSubtle).
+				Foreground(*colorText)
 )
+
+// rebuildStyles пересоздаёт все стили, зависящие от палитры. Вызывается
+// после applyTheme.
+func rebuildStyles() {
+	headerStyle = headerStyle.Background(*colorPrimary)
+	headerPillStyle = headerPillStyle.Background(*colorBgSubtle).Foreground(*colorPrimary)
+	headerInfoStyle = headerInfoStyle.Background(*colorBgLight).Foreground(*colorSecondary)
+	langPillStyle = langPillStyle.Background(*colorAccent)
+
+	userBubbleStyle = userBubbleStyle.Foreground(*colorText).BorderForeground(*colorPrimary)
+	assistantBubbleStyle = assistantBubbleStyle.Foreground(*colorText)
+	userLabelStyle = userLabelStyle.Foreground(*colorPrimary)
+	assistantLabelStyle = assistantLabelStyle.Foreground(*colorSecondary)
+
+	toolCallStyle = toolCallStyle.BorderForeground(*colorWarning).Foreground(*colorWarning)
+	toolResultStyle = toolResultStyle.BorderForeground(*colorSuccess).Foreground(*colorSuccess)
+	toolErrorStyle = toolErrorStyle.BorderForeground(*colorError).Foreground(*colorError)
+
+	inputContainerStyle = inputContainerStyle.BorderForeground(*colorBorder)
+	inputContainerFocusStyle = inputContainerFocusStyle.BorderForeground(*colorSecondary)
+	inputPromptStyle = inputPromptStyle.Foreground(*colorPrimary)
+
+	statusBarStyle = statusBarStyle.Background(*colorBgLight).Foreground(*colorMuted)
+	statusOKStyle = statusOKStyle.Foreground(*colorSuccess)
+	statusBusyStyle = statusBusyStyle.Foreground(*colorWarning)
+	statusErrStyle = statusErrStyle.Foreground(*colorError)
+
+	keyHintStyle = keyHintStyle.Foreground(*colorMuted)
+	keyStyle = keyStyle.Foreground(*colorSecondary)
+	linkStyle = linkStyle.Foreground(*colorLink)
+	dividerStyle = dividerStyle.Foreground(*colorBorder)
+
+	codeBlockStyle = codeBlockStyle.Background(*colorBg).Foreground(*colorText).BorderForeground(*colorSecondary)
+	spinnerStyle = spinnerStyle.Foreground(*colorSecondary)
+
+	tagLocalStyle = tagLocalStyle.Foreground(*colorSuccess)
+	tagFreeStyle = tagFreeStyle.Foreground(lipgloss.Color("#FED7AA"))
+	// tagCloudStyle uses a hard-coded light blue foreground, no theme dep.
+
+	providerActiveStyle = providerActiveStyle.Foreground(*colorAccent)
+	providerSelectedStyle = providerSelectedStyle.Background(*colorBgSubtle)
+	paletteSelectedStyle = paletteSelectedStyle.Background(*colorBgSubtle).Foreground(*colorText)
+
+	keyStatusOKStyle = keyStatusOKStyle.Foreground(*colorSuccess)
+	keyStatusBadStyle = keyStatusBadStyle.Foreground(*colorError)
+	keyStatusNAStyle = keyStatusNAStyle.Background(*colorBgLight).Foreground(*colorMuted)
+}

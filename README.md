@@ -36,6 +36,7 @@ Think of it as a lightweight alternative to OpenCode or Aider — compiled to a 
 - **Single ~10 MB binary** — no Node.js, no Python, no Docker
 - **Streaming responses** — see the AI think in real time
 - **Tool use** — AI can read, write, patch files, run shell commands, search the web, download files
+- **Plugin system** — in-process Go plugins can add AI tools, override theme colors, and contribute to the system prompt
 - **Web search** — built-in DuckDuckGo search + page fetcher, no API key needed
 - **Multi-provider** — Ollama (local + cloud), OpenAI, Anthropic, OpenRouter
 - **Free cloud models** — works great with `glm-4.7:cloud` and `qwen3-coder-next:cloud` via Ollama (no GPU required)
@@ -173,6 +174,94 @@ TermCode gives the AI access to your project and the web:
 | `fetch_page` | Fetch and read a web page as plain text |
 | `download_file` | Download a file from the internet (max 50 MB) |
 
+### Plugin tools
+
+You can extend the AI's toolset with in-process Go plugins. See
+[Plugins](#plugins) below.
+
+## Plugins
+
+TermCode has a small in-process plugin system. A plugin is just a Go
+file that gets compiled into the TermCode binary — no IPC, no
+subprocess, no .so files, no Termux workaround.
+
+Plugins can do three things:
+
+1. **Register tools** the AI can call (same wire format as built-in tools).
+2. **Override theme colors** (any subset of the palette).
+3. **Append fragments** to the AI's system prompt.
+
+### Authoring a plugin
+
+Create `internal/plugins/<name>/<name>.go`:
+
+```go
+package myplugin
+
+import (
+	"github.com/NekoFemDev/termcode/internal/plugin/host"
+	"github.com/NekoFemDev/termcode/internal/plugin/register"
+)
+
+type MyPlugin struct{}
+
+func (p *MyPlugin) Name() string        { return "myplugin" }
+func (p *MyPlugin) Version() string     { return "0.1.0" }
+func (p *MyPlugin) Description() string { return "What this plugin does." }
+
+func (p *MyPlugin) Register(r host.Registry) error {
+	// 1. Register a tool the AI can call.
+	if err := r.RegisterTool(host.Tool{
+		Name:        "myplugin_echo",
+		Description: "Echo the input back to the AI.",
+		Params:      "text (string, required) — the text to echo",
+		Run: func(params map[string]string) (string, error) {
+			return params["text"], nil
+		},
+	}); err != nil {
+		return err
+	}
+
+	// 2. Override theme colors. Empty fields keep the defaults.
+	r.SetTheme(host.Theme{Primary: "EC4899"}) // hot pink brand
+
+	// 3. Add a system-prompt fragment.
+	r.AppendSystemPrompt("## My plugin active\nKeep replies under 3 sentences.")
+
+	return nil
+}
+
+func init() { register.Plug(&MyPlugin{}) }
+```
+
+Then add a blank import in `internal/plugins/registry.go`:
+
+```go
+import (
+	_ "github.com/NekoFemDev/termcode/internal/plugins/myplugin"
+)
+```
+
+Rebuild TermCode. The new tool is available to the AI, the theme is
+applied at startup, and the prompt fragment is appended to every
+conversation.
+
+### Listing loaded plugins
+
+```bash
+termcode plugin list
+```
+
+### Caveats
+
+- Plugins are compiled into the TermCode binary. You need Go installed
+  to add a plugin. Once compiled, plugins work on every platform
+  TermCode supports (Termux, Linux, macOS, Windows).
+- Plugin code runs with the same privileges as TermCode. Don't load
+  plugins you don't trust.
+- Plugin tools share the same name space as built-in tools. Names like
+  `read_file` are reserved and registering one will fail.
+
 ### Example: AI searches the web
 
 ```
@@ -222,18 +311,16 @@ When the AI asks a clarifying question, TermCode shows a checkbox UI:
 termcode/
 ├── cmd/termcode/main.go          # Entry point
 ├── internal/
-│   ├── ai/
-│   │   ├── provider.go           # Ollama, OpenAI, Anthropic, OpenRouter + auto context detect
-│   │   ├── toolparser.go         # Multi-format tool call parser (5 formats)
-│   │   └── context.go            # Context window management & token trimming
-│   ├── config/config.go          # Config + per-model token limits table
-│   ├── session/session.go        # Session history → ~/.config/termcode/sessions/
-│   ├── tools/tools.go            # All tools: files, shell, web search, download
-│   └── tui/
-│       ├── model.go              # BubbleTea Model — full UI & state machine
-│       ├── highlight.go          # Syntax highlighting (pure Go, no deps)
-│       ├── runner.go             # tea.NewProgram launcher
-│       └── styles.go             # lipgloss dark theme
+│   ├── ai/                       # Provider clients + tool parser + context trim
+│   ├── config/                   # Config + ProviderMeta + model limits
+│   ├── session/                  # Session history → ~/.config/termcode/sessions/
+│   ├── tools/                    # Built-in tools + plugin tool dispatch
+│   ├── plugin/
+│   │   ├── host/                 # Plugin contract (Tool, Theme, Registry)
+│   │   └── register/             # In-process plugin registration
+│   ├── plugins/                  # Built-in plugin imports + example
+│   │   └── example/              # Demo plugin (tool + theme + prompt fragment)
+│   └── tui/                      # BubbleTea TUI (split into 14 files)
 ├── go.mod
 ├── Makefile
 └── build-termux.sh               # One-shot Termux build script

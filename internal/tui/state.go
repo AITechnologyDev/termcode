@@ -90,7 +90,8 @@ type Model struct {
 	sess    *session.Session
 	workDir string
 
-	executor *tools.Executor
+	executor    *tools.Executor
+	pluginInput *PluginInput
 
 	currentState state
 	streaming    string

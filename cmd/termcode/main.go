@@ -110,6 +110,25 @@ func loadPlugins() *tui.PluginInput {
 			Run:         tool.Run,
 		})
 	}
+	for _, sc := range snap.SlashCommands {
+		sc := sc
+		in.SlashCommands = append(in.SlashCommands, tui.PluginSlashSpec{
+			Name:        sc.Name,
+			Description: sc.Description,
+			Run: func(argv []string) (string, string, error) {
+				out, err := sc.Run(argv)
+				return out, "", err
+			},
+		})
+	}
+	for _, pi := range snap.PaletteItems {
+		pi := pi
+		in.PaletteItems = append(in.PaletteItems, tui.PluginPaletteSpec{
+			Title:       pi.Title,
+			Description: pi.Description,
+			Run:         pi.Run,
+		})
+	}
 	if snap.Theme != nil {
 		th := &tui.ThemeOverride{}
 		th.Primary = snap.Theme.Primary
@@ -151,16 +170,30 @@ func buildPluginCmd() *cobra.Command {
 				fmt.Println("import it from internal/plugins/registry.go, then rebuild.")
 				return nil
 			}
-			fmt.Printf("%d plugin(s) loaded, %d tool(s) registered.\n",
-				len(snap.PluginNames), len(snap.Tools))
+			fmt.Printf("%d plugin(s) loaded.\n", len(snap.PluginNames))
 			for _, name := range snap.PluginNames {
 				fmt.Println("● " + name)
 			}
-			if snap.Theme != nil {
-				fmt.Println("Theme override: active")
+			if n := len(snap.Tools); n > 0 {
+				fmt.Printf("  Tools: %d\n", n)
 			}
-			if len(snap.PromptParts) > 0 {
-				fmt.Printf("System-prompt fragments: %d\n", len(snap.PromptParts))
+			if n := len(snap.SlashCommands); n > 0 {
+				fmt.Printf("  Slash commands: %d\n", n)
+				for _, c := range snap.SlashCommands {
+					fmt.Printf("    %s — %s\n", c.Name, c.Description)
+				}
+			}
+			if n := len(snap.PaletteItems); n > 0 {
+				fmt.Printf("  Palette items: %d\n", n)
+				for _, p := range snap.PaletteItems {
+					fmt.Printf("    %s — %s\n", p.Title, p.Description)
+				}
+			}
+			if snap.Theme != nil {
+				fmt.Println("  Theme override: active")
+			}
+			if n := len(snap.PromptParts); n > 0 {
+				fmt.Printf("  System-prompt fragments: %d\n", n)
 			}
 			return nil
 		},

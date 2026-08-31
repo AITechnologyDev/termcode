@@ -14,25 +14,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// PluginInput is the in-process plugin snapshot the TUI consumes at
-// startup. May be nil.
-type PluginInput struct {
-	Tools       []PluginToolSpec
-	Theme       *ThemeOverride
-	PromptParts []string
-	Names       []string
-}
-
-// PluginToolSpec — минимальное описание инструмента для регистрации в
-// Executor. Совпадает по форме с tools.PluginTool, но живёт в tui,
-// чтобы не тянуть plugin/host в эту зависимость.
-type PluginToolSpec struct {
-	Name        string
-	Description string
-	Params      string
-	Run         func(params map[string]string) (string, error)
-}
-
 // New создаёт новую TUI модель.
 // plugins may be nil — the TUI then runs without plugins.
 func New(cfg *config.Config, workDir string, plugins *PluginInput) (*Model, error) {
@@ -105,7 +86,6 @@ func New(cfg *config.Config, workDir string, plugins *PluginInput) (*Model, erro
 		displayedLen:   0,
 	}
 
-	// Apply plugin theme + register plugin tools.
 	if plugins != nil {
 		if plugins.Theme != nil {
 			applyTheme(plugins.Theme)

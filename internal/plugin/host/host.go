@@ -8,9 +8,11 @@
 // At startup, TermCode calls Register on every registered plugin. The
 // plugin can return:
 //
-//   - a list of Tools the AI can call (same wire format as built-in tools)
-//   - a Theme that overrides the default color palette
-//   - a SystemPromptFragment appended to the AI's system prompt
+//   - Tools the AI can call (same wire format as built-in tools)
+//   - Slash commands users type into chat (e.g. /hello)
+//   - Palette items shown in Ctrl+P
+//   - A Theme that overrides the default color palette
+//   - SystemPromptFragments appended to the AI's system prompt
 //
 // No IPC, no subprocess, no Go plugins. Adding a plugin requires a single
 // `go build` and a TermCode restart.
@@ -35,6 +37,12 @@ type Registry interface {
 	// RegisterTool adds a tool the AI can call. Name must be unique
 	// across all plugins and built-in tools.
 	RegisterTool(t Tool) error
+	// RegisterSlashCommand adds a `/name` command users can type into
+	// the chat input. Name must start with "/" and be unique.
+	RegisterSlashCommand(c SlashCommand) error
+	// RegisterPaletteItem adds an entry to the Ctrl+P command palette.
+	// Title must be unique.
+	RegisterPaletteItem(p PaletteItem) error
 	// SetTheme overrides the default color palette. Pass only the
 	// colors you want to change; unset fields keep their defaults.
 	SetTheme(Theme)
@@ -52,6 +60,31 @@ type Tool struct {
 	// string and/or an error. The error is reported to the AI as a
 	// tool failure.
 	Run func(params map[string]string) (string, error)
+}
+
+// SlashCommand — a `/name` command typed into the chat input. The Run
+// callback receives everything after the command name, split on
+// whitespace. Return the string to show in chat and/or an error.
+type SlashCommand struct {
+	// Name — must start with "/", e.g. "/hello".
+	Name string
+	// Description — shown in the help footer and the command palette.
+	Description string
+	// Run — argv is what came after the command name, already split
+	// on whitespace. e.g. "/hello world" → argv=["world"].
+	Run func(argv []string) (string, error)
+}
+
+// PaletteItem — a Ctrl+P entry. The Run callback returns the text to
+// append to the chat and/or an error.
+type PaletteItem struct {
+	// Title — unique identifier, shown as the item name in the palette.
+	Title string
+	// Description — secondary text in the palette row.
+	Description string
+	// Run — invoked when the user selects this item. Return the text
+	// to show in the chat and/or an error.
+	Run func() (string, error)
 }
 
 // Theme — color palette override. Empty fields mean "keep default".

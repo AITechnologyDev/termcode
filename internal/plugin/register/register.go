@@ -13,6 +13,7 @@ package register
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/NekoFemDev/termcode/internal/plugin/host"
 )
@@ -40,10 +41,12 @@ func Plug(p host.Plugin) {
 
 // Snapshot is a stable view of all registered plugins.
 type Snapshot struct {
-	Tools       []host.Tool
-	Theme       *host.Theme
-	PromptParts []string
-	PluginNames []string
+	Tools         []host.Tool
+	SlashCommands []host.SlashCommand
+	PaletteItems  []host.PaletteItem
+	Theme         *host.Theme
+	PromptParts   []string
+	PluginNames   []string
 }
 
 // Load runs every registered plugin's Register hook against an internal
@@ -84,15 +87,23 @@ func Names() []string {
 // ── registry implementation of host.Registry ────────────────────────────
 
 type registryImpl struct {
-	tools       []host.Tool
-	toolsByName map[string]int
-	theme       *host.Theme
-	prompts     []string
-	names       []string
+	tools             []host.Tool
+	toolsByName       map[string]int
+	slashCommands     []host.SlashCommand
+	slashCommandsByNm map[string]int
+	paletteItems      []host.PaletteItem
+	paletteByTitle    map[string]int
+	theme             *host.Theme
+	prompts           []string
+	names             []string
 }
 
 func newRegistry() *registryImpl {
-	return &registryImpl{toolsByName: map[string]int{}}
+	return &registryImpl{
+		toolsByName:       map[string]int{},
+		slashCommandsByNm: map[string]int{},
+		paletteByTitle:    map[string]int{},
+	}
 }
 
 func (r *registryImpl) RegisterTool(t host.Tool) error {
@@ -101,6 +112,27 @@ func (r *registryImpl) RegisterTool(t host.Tool) error {
 	}
 	r.toolsByName[t.Name] = len(r.tools)
 	r.tools = append(r.tools, t)
+	return nil
+}
+
+func (r *registryImpl) RegisterSlashCommand(c host.SlashCommand) error {
+	if !strings.HasPrefix(c.Name, "/") {
+		return fmt.Errorf("slash command name %q must start with '/'", c.Name)
+	}
+	if _, dup := r.slashCommandsByNm[c.Name]; dup {
+		return fmt.Errorf("duplicate slash command %q", c.Name)
+	}
+	r.slashCommandsByNm[c.Name] = len(r.slashCommands)
+	r.slashCommands = append(r.slashCommands, c)
+	return nil
+}
+
+func (r *registryImpl) RegisterPaletteItem(p host.PaletteItem) error {
+	if _, dup := r.paletteByTitle[p.Title]; dup {
+		return fmt.Errorf("duplicate palette item %q", p.Title)
+	}
+	r.paletteByTitle[p.Title] = len(r.paletteItems)
+	r.paletteItems = append(r.paletteItems, p)
 	return nil
 }
 
@@ -117,9 +149,11 @@ func (r *registryImpl) AppendSystemPrompt(fragment string) {
 
 func (r *registryImpl) snapshot() *Snapshot {
 	return &Snapshot{
-		Tools:       r.tools,
-		Theme:       r.theme,
-		PromptParts: r.prompts,
-		PluginNames: append([]string(nil), r.names...),
+		Tools:         r.tools,
+		SlashCommands: r.slashCommands,
+		PaletteItems:  r.paletteItems,
+		Theme:         r.theme,
+		PromptParts:   r.prompts,
+		PluginNames:   append([]string(nil), r.names...),
 	}
 }

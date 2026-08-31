@@ -200,6 +200,17 @@ func (m Model) handleKeyChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			return m.startPull(modelName)
 		}
+		// Plugin slash commands
+		if strings.HasPrefix(text, "/") {
+			if newM, handled, errMsg := m.runPluginSlash(text); handled {
+				m.input.Reset()
+				m.currentState = stateChat
+				if errMsg != "" {
+					m.errMsg = errMsg
+				}
+				return newM, nil
+			}
+		}
 		return m.sendMessage()
 	}
 	return m, nil

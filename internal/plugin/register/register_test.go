@@ -13,11 +13,13 @@ func reset() {
 }
 
 type fakePlugin struct {
-	name        string
-	tools       []host.Tool
-	theme       *host.Theme
-	prompts     []string
-	registerErr error
+	name          string
+	tools         []host.Tool
+	slashCommands []host.SlashCommand
+	paletteItems  []host.PaletteItem
+	theme         *host.Theme
+	prompts       []string
+	registerErr   error
 }
 
 func (f *fakePlugin) Name() string        { return f.name }
@@ -29,6 +31,16 @@ func (f *fakePlugin) Register(r host.Registry) error {
 	}
 	for _, t := range f.tools {
 		if err := r.RegisterTool(t); err != nil {
+			return err
+		}
+	}
+	for _, sc := range f.slashCommands {
+		if err := r.RegisterSlashCommand(sc); err != nil {
+			return err
+		}
+	}
+	for _, pi := range f.paletteItems {
+		if err := r.RegisterPaletteItem(pi); err != nil {
 			return err
 		}
 	}
@@ -119,4 +131,73 @@ func TestPlug_PanicsOnDuplicate(t *testing.T) {
 	}()
 	Plug(&fakePlugin{name: "x"})
 	Plug(&fakePlugin{name: "x"})
+}
+
+func TestLoad_SlashAndPalette(t *testing.T) {
+	reset()
+	Plug(&fakePlugin{
+		name: "p",
+		slashCommands: []host.SlashCommand{
+			{Name: "/hi", Description: "say hi"},
+		},
+		paletteItems: []host.PaletteItem{
+			{Title: "Demo", Description: "demo item"},
+		},
+	})
+	snap, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(snap.SlashCommands) != 1 || snap.SlashCommands[0].Name != "/hi" {
+		t.Errorf("expected one slash command named /hi, got %+v", snap.SlashCommands)
+	}
+	if len(snap.PaletteItems) != 1 || snap.PaletteItems[0].Title != "Demo" {
+		t.Errorf("expected one palette item named Demo, got %+v", snap.PaletteItems)
+	}
+}
+
+func TestRegister_RejectsSlashWithoutLeadingSlash(t *testing.T) {
+	reset()
+	Plug(&fakePlugin{
+		name: "p",
+		slashCommands: []host.SlashCommand{
+			{Name: "hi"}, // missing /
+		},
+	})
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "must start with '/'") {
+		t.Errorf("expected error about leading slash, got: %v", err)
+	}
+}
+
+func TestRegister_RejectsDuplicateSlash(t *testing.T) {
+	reset()
+	Plug(&fakePlugin{
+		name:          "p1",
+		slashCommands: []host.SlashCommand{{Name: "/dup"}},
+	})
+	Plug(&fakePlugin{
+		name:          "p2",
+		slashCommands: []host.SlashCommand{{Name: "/dup"}},
+	})
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "/dup") {
+		t.Errorf("expected duplicate slash error, got: %v", err)
+	}
+}
+
+func TestRegister_RejectsDuplicatePalette(t *testing.T) {
+	reset()
+	Plug(&fakePlugin{
+		name:         "p1",
+		paletteItems: []host.PaletteItem{{Title: "Same"}},
+	})
+	Plug(&fakePlugin{
+		name:         "p2",
+		paletteItems: []host.PaletteItem{{Title: "Same"}},
+	})
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "Same") {
+		t.Errorf("expected duplicate palette error, got: %v", err)
+	}
 }

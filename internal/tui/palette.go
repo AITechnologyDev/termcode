@@ -15,7 +15,7 @@ import (
 // buildPaletteItems — список команд с локализованными названиями.
 func (m Model) buildPaletteItems() []paletteItem {
 	t := m.tr()
-	return []paletteItem{
+	items := []paletteItem{
 		{
 			key: "Ctrl+P", title: t.PalCmdPalette,
 			description: t.PalCmdPaletteDesc,
@@ -230,6 +230,30 @@ func (m Model) buildPaletteItems() []paletteItem {
 			},
 		},
 	}
+
+	// Plugin palette items. Each plugin-contributed entry becomes a
+	// selectable item that runs the plugin's callback.
+	if m.pluginInput != nil {
+		for _, pi := range m.pluginInput.PaletteItems {
+			entry := pi
+			items = append(items, paletteItem{
+				key:         "plugin",
+				title:       entry.Title,
+				description: entry.Description,
+				action: func(m Model) (Model, tea.Cmd) {
+					m.currentState = stateChat
+					m.paletteFilter = ""
+					m2, errMsg := m.runPluginPalette(entry.Title)
+					if errMsg != "" {
+						m2.errMsg = errMsg
+					}
+					return m2, nil
+				},
+			})
+		}
+	}
+
+	return items
 }
 
 // filterPaletteItems — поиск по title/key/description.

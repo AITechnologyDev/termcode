@@ -36,7 +36,7 @@ Think of it as a lightweight alternative to OpenCode or Aider — compiled to a 
 - **Single ~10 MB binary** — no Node.js, no Python, no Docker
 - **Streaming responses** — see the AI think in real time
 - **Tool use** — AI can read, write, patch files, run shell commands, search the web, download files
-- **Plugin system** — in-process Go plugins can add AI tools, override theme colors, and contribute to the system prompt
+- **Plugin system** — in-process Go plugins can add AI tools, slash commands, palette items, override theme colors, and contribute to the system prompt
 - **Web search** — built-in DuckDuckGo search + page fetcher, no API key needed
 - **Multi-provider** — Ollama (local + cloud), OpenAI, Anthropic, OpenRouter
 - **Free cloud models** — works great with `glm-4.7:cloud` and `qwen3-coder-next:cloud` via Ollama (no GPU required)
@@ -185,11 +185,13 @@ TermCode has a small in-process plugin system. A plugin is just a Go
 file that gets compiled into the TermCode binary — no IPC, no
 subprocess, no .so files, no Termux workaround.
 
-Plugins can do three things:
+Plugins can do five things:
 
 1. **Register tools** the AI can call (same wire format as built-in tools).
-2. **Override theme colors** (any subset of the palette).
-3. **Append fragments** to the AI's system prompt.
+2. **Register slash commands** users type into chat (e.g. `/hello`).
+3. **Register palette items** that show up under `Ctrl+P`.
+4. **Override theme colors** (any subset of the palette).
+5. **Append fragments** to the AI's system prompt.
 
 ### Authoring a plugin
 
@@ -222,10 +224,28 @@ func (p *MyPlugin) Register(r host.Registry) error {
 		return err
 	}
 
-	// 2. Override theme colors. Empty fields keep the defaults.
+	// 2. Register a slash command. Users type "/myplugin <args>".
+	r.RegisterSlashCommand(host.SlashCommand{
+		Name:        "/myplugin",
+		Description: "Demo slash command.",
+		Run: func(argv []string) (string, error) {
+			return "Hi from myplugin!", nil
+		},
+	})
+
+	// 3. Register a palette item (Ctrl+P).
+	r.RegisterPaletteItem(host.PaletteItem{
+		Title:       "My plugin — info",
+		Description: "Insert plugin info into the chat.",
+		Run: func() (string, error) {
+			return "myplugin v0.1.0 loaded.", nil
+		},
+	})
+
+	// 4. Override theme colors. Empty fields keep the defaults.
 	r.SetTheme(host.Theme{Primary: "EC4899"}) // hot pink brand
 
-	// 3. Add a system-prompt fragment.
+	// 5. Add a system-prompt fragment.
 	r.AppendSystemPrompt("## My plugin active\nKeep replies under 3 sentences.")
 
 	return nil
